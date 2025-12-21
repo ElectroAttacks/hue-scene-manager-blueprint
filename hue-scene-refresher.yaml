@@ -1,0 +1,506 @@
+blueprint:
+  name: Hue Scene Refresher
+  domain: automation
+  author: Electro_Attacks
+  description: >
+    Refreshes the last active Philips Hue scene for a room or zone when lights
+    change state. Supports dynamic scenes, brightness restoration, effect safety
+    checks, and alternative trigger sources.
+  homeassistant:
+    min_version: 2025.12.4
+
+  input:
+    triggers:
+      name: Triggers
+      icon: mdi:flash
+      description: Configure which events should cause the scene refresh.
+      input:
+        targets:
+          name: Target Light(s)
+          description: >
+            Hue lights, rooms, or zones that should be observed for state changes.
+            Any ON/OFF transition within this target will trigger the automation.
+          selector:
+            target:
+              device:
+                integration: hue
+              entity:
+                domain: light
+
+        state_trigger_delay:
+          name: Trigger Delay
+          description: >
+            Delay (in seconds) before evaluating the scene state after a light
+            changes. Useful to allow Hue to fully settle its internal state.
+          default: 1
+          selector:
+            number:
+              min: 1
+              max: 100
+              step: 1
+              unit_of_measurement: sec
+              mode: slider
+
+        alternative_triggers:
+          name: Alternative Triggers
+          description: >
+            Optional additional triggers (e.g. time, motion, button press).
+            These triggers must resolve to a Hue light entity to be considered valid.
+          default: []
+          selector:
+            trigger:
+
+    scene_options:
+      name: Scene Options
+      icon: mdi:palette
+      description: Scene behavior and animation configuration.
+      input:
+        transition_time:
+          name: Transition Time
+          description: >
+            Transition duration (in seconds) used when activating scenes or restoring brightness.
+          default: 3
+          selector:
+            number:
+              min: 1
+              max: 100
+              step: 1
+              unit_of_measurement: sec
+              mode: slider
+
+        dynamic_scene_speed:
+          name: Dynamic Scene Speed
+          description: >
+            Playback speed for dynamic Hue scenes. Lower values are slower.
+          default: 60
+          selector:
+            number:
+              min: 1
+              max: 100
+              step: 1
+              mode: slider
+
+        targets_with_dynamic_scenes:
+          name: Targets with Dynamic Scenes
+          description: >
+            Rooms or zones that should activate scenes in dynamic mode.
+          default: []
+          selector:
+            target:
+              device:
+                integration: hue
+              entity:
+                domain: light
+
+    advanced_options:
+      name: Advanced Options
+      icon: mdi:cog
+      description: Optional safety and exclusion rules.
+      collapsed: true
+      input:
+        ignore_active_effects:
+          name: Ignore Active Effects
+          description: >
+            If enabled, scenes may be refreshed even when lights currently have
+            active effects (e.g. color loop).
+          default: false
+          selector:
+            boolean:
+
+        targets_excluded_from_state_check:
+          name: Targets Excluded from State Check
+          description: >
+            Lights that should be ignored when determining whether a room or zone
+            is considered fully ON.
+          default: []
+          selector:
+            target:
+              device:
+                integration: hue
+              entity:
+                domain: light
+
+        targets_excluded_from_brightness_restore:
+          name: Targets Excluded from Brightness Restore
+          description: >
+            Lights that should not have their brightness restored after a scene refresh.
+          default: []
+          selector:
+            target:
+              device:
+                integration: hue
+              entity:
+                domain: light
+
+mode: restart
+max_exceeded: info
+
+triggers:
+  - alias: Detect any light in target group turning ON
+    id: state_change
+    trigger: light.turned_on
+    target: !input targets
+    options:
+      behavior: any
+
+  - alias: Detect any light in target group turning OFF
+    id: state_change
+    trigger: light.turned_off
+    target: !input targets
+    options:
+      behavior: any
+
+  - triggers: !input alternative_triggers
+
+conditions:
+  - alias: Pass if triggered by state change or valid Hue light
+    condition: or
+    conditions:
+      - alias: Triggered by Hue state change
+        condition: trigger
+        id: state_change
+
+      - alias: Triggered externally but resolved to Hue light
+        condition: and
+        conditions:
+          - alias: Not triggered by primary state_change
+            condition: not
+            conditions:
+              - condition: trigger
+                id: state_change
+
+          - alias: Trigger entity_id is valid
+            condition: template
+            value_template: "{{ trigger.entity_id is string }}"
+
+          - alias: Entity belongs to light domain
+            condition: template
+            value_template: "{{ trigger.entity_id.split('.')[0] == 'light' }}"
+
+          - alias: Entity belongs to Philips Hue integration
+            condition: template
+            value_template: >
+              {% set ids = device_attr(trigger.entity_id, 'identifiers') or [] %}
+              {{ ids | selectattr(0, 'eq', 'hue') | list | count > 0 }}
+
+variables:
+  dynamic_scene_targets: !input targets_with_dynamic_scenes
+  state_check_exclusions: !input targets_excluded_from_state_check
+  brightness_restore_exclusions: !input targets_excluded_from_brightness_restore
+  allow_active_effects: !input ignore_active_effects
+  dynamic_scene_speed: !input dynamic_scene_speed
+  scene_transition_time: !input transition_time
+
+actions:
+  - delay: !input state_trigger_delay
+
+  - alias: Resolve target selectors into concrete light entities
+    variables:
+      resolved_targets: >
+        {#
+          Converts Home Assistant target selectors (entity / device / area / label)
+          into flat, unique lists of light entities.
+        #}
+
+        {%- macro resolve_targets(source, returns) -%}
+
+          {# Direct entity targets #}
+          {%- set entities =
+            source.entity_id if source.entity_id is list
+            else ([source.entity_id] if source.entity_id is defined else [])
+          -%}
+
+          {# Hierarchical targets #}
+          {%- set floors =
+            (source.floor_id | map('floor_entities') | list | sum(start=[]))
+            if source.floor_id is list else
+            (floor_entities(source.floor_id) if source.floor_id is defined else [])
+          -%}
+
+          {%- set areas =
+            (source.area_id | map('area_entities') | list | sum(start=[]))
+            if source.area_id is list else
+            (area_entities(source.area_id) if source.area_id is defined else [])
+          -%}
+
+          {%- set devices =
+            (source.device_id | map('device_entities') | list | sum(start=[]))
+            if source.device_id is list else
+            (device_entities(source.device_id) if source.device_id is defined else [])
+          -%}
+
+          {%- set labels =
+            (source.label_id | map('label_entities') | list | sum(start=[]))
+            if source.label_id is list else
+            (label_entities(source.label_id) if source.label_id is defined else [])
+          -%}
+
+          {# Merge, filter and de-duplicate light entities #}
+          {%- do returns(
+            (entities + floors + areas + devices + labels)
+              | select('match', '^light\.')
+              | unique
+              | list
+          ) -%}
+
+        {%- endmacro -%}
+
+        {% set fn = resolve_targets | as_function %}
+        {{
+          {
+            'dynamic': fn(dynamic_scene_targets),
+            'state_excluded': fn(state_check_exclusions),
+            'brightness_excluded': fn(brightness_restore_exclusions)
+          }
+        }}
+
+  - alias: Determine Hue room and related zones for trigger entity
+    variables:
+      area_context: >
+        {#
+          Determines the Hue room affected by the trigger and
+          all zones that overlap with that room.
+        #}
+
+        {% set hue_groups =
+          states.light
+          | selectattr('attributes.is_hue_group','eq',true)
+          | list
+        %}
+
+        {% set room_entity = none %}
+
+        {# Trigger is already a Hue group #}
+        {% if is_state_attr(trigger.entity_id, 'is_hue_group', true) %}
+          {% if is_state_attr(trigger.entity_id, 'hue_type', 'room') %}
+            {% set room_entity = trigger.entity_id %}
+          {% else %}
+            {% set first_light = state_attr(trigger.entity_id,'entity_id') | first %}
+            {% set room_entity =
+              hue_groups
+              | selectattr('attributes.hue_type','eq','room')
+              | selectattr('attributes.entity_id','contains', first_light)
+              | map(attribute='entity_id')
+              | first
+            %}
+          {% endif %}
+        {% else %}
+          {# Trigger is a single light #}
+          {% set room_entity =
+            hue_groups
+            | selectattr('attributes.hue_type','eq','room')
+            | selectattr('attributes.entity_id','contains', trigger.entity_id)
+            | map(attribute='entity_id')
+            | first
+          %}
+        {% endif %}
+
+        {# Collect overlapping zones #}
+        {% set ns = namespace(zones=[]) %}
+        {% if room_entity %}
+          {% set room_lights = state_attr(room_entity,'entity_id') %}
+          {% for zone in hue_groups | selectattr('attributes.hue_type','eq','zone') %}
+            {% if state_attr(zone.entity_id,'entity_id') | select('in', room_lights) | list %}
+              {% set ns.zones = ns.zones + [zone.entity_id] %}
+            {% endif %}
+          {% endfor %}
+        {% endif %}
+
+        {{ { 'room': room_entity, 'zones': ns.zones | unique | list } }}
+
+  - alias: Snapshot current scene, brightness and state for affected areas
+    variables:
+      area_snapshot: >
+        {#
+          Captures:
+          - Whether room/zones are fully ON
+          - Last active Hue scene per group
+          - Brightness levels for restoration
+        #}
+
+        {% set snapshot = namespace(room = none, zones = []) %}
+        {% set groups =
+          area_context.zones +
+          ([area_context.room] if area_context.room else [])
+        %}
+
+        {% for group in groups %}
+          {% set members = state_attr(group,'entity_id') or [] %}
+
+          {% set lights =
+            expand(members)
+            | rejectattr('entity_id','in', resolved_targets.state_excluded)
+            | selectattr('state','ne','unknown')
+            | list
+          %}
+
+          {% set active = lights | selectattr('state','eq','on') | list %}
+
+          {% set effect_capable =
+            active | selectattr('attributes.effect','ne', undefined) | list
+          %}
+
+          {% set effects_clear =
+            allow_active_effects or
+            (effect_capable
+              | selectattr('attributes.effect','in',[none,'off','none','None'])
+              | list | count == effect_capable | count)
+          %}
+
+          {% set is_area_on =
+            lights | count > 0 and
+            active | count == lights | count and
+            effects_clear
+          %}
+
+          {% set scenes =
+            states.scene
+            | selectattr('attributes.group_name', 'eq', state_attr(group, 'friendly_name'))
+            | selectattr('state','ne','unknown') 
+            | sort(attribute='state', reverse=true) 
+            | map(attribute='entity_id')
+            | list
+          %}
+
+          {% set group_data = {
+            'entity_id': group,
+            'brightness': state_attr(group,'brightness'),
+            'is_area_on': is_area_on,
+            'last_scene': scenes | first
+          } %}
+
+          {% if group == area_context.room %}
+            {# Capture per-light brightness for room restoration #}
+            {% set light_snapshot = namespace(items=[]) %}
+            {% for light in active %}
+              {% set light_snapshot.items = light_snapshot.items + [{
+                'entity_id': light.entity_id,
+                'brightness': light.attributes.brightness
+              }] %}
+            {% endfor %}
+
+            {% set group_data = group_data | combine({
+              'active_lights': light_snapshot.items
+            }) %}
+
+            {% set snapshot.room = group_data %}
+          {% elif is_area_on %}
+            {% set snapshot.zones = snapshot.zones + [group_data] %}
+          {% endif %}
+        {% endfor %}
+
+        {{ { 'room': snapshot.room, 'zones': snapshot.zones } }}
+
+  - alias: Decide whether full room scene refresh is allowed
+    if:
+      - alias: Room is fully ON and valid for scene refresh
+        condition: template
+        value_template: "{{ area_snapshot.room.is_area_on }}"
+    then:
+      - alias: Build scene activation data for room
+        variables:
+          scene_data: >
+            {#
+              Scene payload for Hue room activation.
+              Dynamic mode and brightness restoration are applied conditionally.
+            #}
+
+            {% set data = {
+              'dynamic': area_snapshot.room.entity_id in resolved_targets.dynamic,
+              'speed': dynamic_scene_speed,
+              'transition': scene_transition_time
+            } %}
+
+            {% if area_snapshot.room.entity_id not in resolved_targets.brightness_excluded %}
+              {% set data = data | combine({
+                'brightness': area_snapshot.room.brightness
+              }) %}
+            {% endif %}
+
+            {{ data }}
+
+      - alias: Activate last known scene for room
+        action: hue.activate_scene
+        target:
+          entity_id: "{{ area_snapshot.room.last_scene }}"
+        data: "{{ scene_data }}"
+
+      - alias: Wait for scene transition to complete
+        delay: "{{ scene_transition_time }}"
+
+      - alias: Restore brightness for active zones in room
+        repeat:
+          for_each: "{{ area_snapshot.zones }}"
+          sequence:
+            - alias: Zone is allowed for brightness restoration
+              condition: template
+              value_template: >
+                {{ repeat.item.entity_id not in resolved_targets.brightness_excluded }}
+
+            - alias: Zone brightness differs from snapshot
+              condition: template
+              value_template: >
+                {{ state_attr(repeat.item.entity_id,'brightness') != repeat.item.brightness }}
+
+            - alias: Restore zone brightness
+              action: light.turn_on
+              target:
+                entity_id: "{{ repeat.item.entity_id }}"
+              data:
+                brightness: "{{ repeat.item.brightness }}"
+                transition: "{{ scene_transition_time }}"
+
+    else:
+      - alias: Refresh scenes for zones only (room not fully ON)
+        repeat:
+          for_each: "{{ area_snapshot.zones }}"
+          sequence:
+            - alias: Build scene activation data for zone
+              variables:
+                scene_data: >
+                  {#
+                    Scene payload for Hue zone activation.
+                    Brightness restoration is optional.
+                  #}
+
+                  {% set data = {
+                    'dynamic': repeat.item.entity_id in resolved_targets.dynamic,
+                    'speed': dynamic_scene_speed,
+                    'transition': scene_transition_time
+                  } %}
+
+                  {% if repeat.item.entity_id not in resolved_targets.brightness_excluded %}
+                    {% set data = data | combine({
+                      'brightness': repeat.item.brightness
+                    }) %}
+                  {% endif %}
+
+                  {{ data }}
+
+            - alias: Activate last known scene for zone
+              action: hue.activate_scene
+              target:
+                entity_id: "{{ repeat.item.last_scene }}"
+              data: "{{ scene_data }}"
+
+  - alias: Restore brightness for individual lights in room
+    repeat:
+      for_each: "{{ area_snapshot.room.active_lights | default([]) }}"
+      sequence:
+        - alias: Light is allowed for brightness restoration
+          condition: template
+          value_template: >
+            {{ repeat.item.entity_id not in resolved_targets.brightness_excluded }}
+
+        - alias: Light brightness differs from snapshot
+          condition: template
+          value_template: >
+            {{ state_attr(repeat.item.entity_id,'brightness') != repeat.item.brightness }}
+
+        - alias: Restore individual light brightness
+          action: light.turn_on
+          target:
+            entity_id: "{{ repeat.item.entity_id }}"
+          data:
+            brightness: "{{ repeat.item.brightness }}"
+            transition: "{{ scene_transition_time }}"
