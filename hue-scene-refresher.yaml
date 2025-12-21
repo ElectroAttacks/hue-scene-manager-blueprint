@@ -44,7 +44,7 @@ blueprint:
         alternative_triggers:
           name: Alternative Triggers
           description: >
-            Optional additional triggers (e.g. time, motion, button press).
+            Optional additional triggers (e.g. attribute changes).
             These triggers must resolve to a Hue light entity to be considered valid.
           default: []
           selector:
