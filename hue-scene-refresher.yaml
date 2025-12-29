@@ -483,6 +483,9 @@ actions:
                 entity_id: "{{ repeat.item.last_scene }}"
               data: "{{ scene_data }}"
 
+  - alias: Wait for scene transition to complete
+    delay: "{{ scene_transition_time }}"
+    
   - alias: Restore brightness for individual lights in room
     repeat:
       for_each: "{{ area_snapshot.room.active_lights | default([]) }}"
