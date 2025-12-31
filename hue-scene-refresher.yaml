@@ -459,8 +459,6 @@ actions:
               action: light.turn_off
               target:
                 entity_id: "{{ repeat.item }}"
-              data:
-                transition: !input transition_time
             
       - alias: Wait for scene transition to complete
         delay: "{{ scene_transition_time }}"
@@ -530,8 +528,6 @@ actions:
                     action: light.turn_off
                     target:
                       entity_id: "{{ repeat.item }}"
-                    data:
-                      transition: !input transition_time
             
             - alias: Wait for scene transition to complete
               delay: "{{ scene_transition_time }}"
