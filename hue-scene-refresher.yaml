@@ -146,7 +146,7 @@ blueprint:
               entity:
                 domain: light
 
-mode: restart
+mode: single
 max_exceeded: info
 
 triggers:
