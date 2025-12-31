@@ -339,15 +339,8 @@ actions:
         %}
 
         {% for group in groups %}
-          {% set members = expand(state_attr(group,'entity_id') or []) %}
-          
-          {% set force_off = members 
-            | selectattr('entity_id', 'in', resolved_targets.state_excluded) 
-            | selectattr('state', 'eq', 'off') 
-            | map(attribute='entity_id') 
-            | list
-          %}
-          
+          {% set members = expand(state_attr(group,'entity_id') or []) | list %}
+
           {% set lights = members
             | rejectattr('entity_id','in', resolved_targets.state_excluded)
             | selectattr('state','ne','unknown')
@@ -400,6 +393,14 @@ actions:
                 'brightness': light.attributes.brightness
               }] %}
             {% endfor %}
+            
+            {# Capture state excluded lights that are off #}
+            {% set force_off = members 
+              | selectattr('entity_id', 'in', resolved_targets.state_excluded) 
+              | selectattr('state', 'eq', 'off') 
+              | map(attribute='entity_id') 
+              | list
+            %}
 
             {% set group_data = group_data | combine({
               'active_lights': light_snapshot.items,
