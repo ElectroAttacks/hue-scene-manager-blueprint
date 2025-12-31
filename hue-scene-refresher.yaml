@@ -273,7 +273,7 @@ actions:
 
           {# Merge, filter and de-duplicate light entities #}
           {%- do returns(
-            (entities + floors + areas + devices + labels)
+            (entities + floors + areas + devices + labels.entities)
               | select('match', '^light\.')
               | unique
               | list
