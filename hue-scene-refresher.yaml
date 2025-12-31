@@ -219,35 +219,57 @@ actions:
         {%- macro resolve_targets(source, returns) -%}
 
           {# Direct entity targets #}
-          {%- set entities =
-            source.entity_id if source.entity_id is list
-            else ([source.entity_id] if source.entity_id is defined else [])
+          {%- set entities = source.entity_id 
+            if source.entity_id is list
+            else ([source.entity_id] 
+              if source.entity_id is defined 
+              else [])
           -%}
 
           {# Hierarchical targets #}
-          {%- set floors =
-            (source.floor_id | map('floor_entities') | list | sum(start=[]))
-            if source.floor_id is list else
-            (floor_entities(source.floor_id) if source.floor_id is defined else [])
+          {%- set floors = (source.floor_id | map('floor_entities') | list | sum(start=[]))
+            if source.floor_id is list 
+            else (floor_entities(source.floor_id) 
+              if source.floor_id is defined 
+              else [])
           -%}
 
-          {%- set areas =
-            (source.area_id | map('area_entities') | list | sum(start=[]))
-            if source.area_id is list else
-            (area_entities(source.area_id) if source.area_id is defined else [])
+          {%- set areas = (source.area_id | map('area_entities') | list | sum(start=[]))
+            if source.area_id is list 
+            else (area_entities(source.area_id) 
+              if source.area_id is defined 
+              else [])
           -%}
 
-          {%- set devices =
-            (source.device_id | map('device_entities') | list | sum(start=[]))
-            if source.device_id is list else
-            (device_entities(source.device_id) if source.device_id is defined else [])
+          {%- set devices = (source.device_id | map('device_entities') | list | sum(start=[]))
+            if source.device_id is list 
+            else (device_entities(source.device_id) 
+              if source.device_id is defined 
+              else [])
           -%}
 
-          {%- set labels =
-            (source.label_id | map('label_entities') | list | sum(start=[]))
-            if source.label_id is list else
-            (label_entities(source.label_id) if source.label_id is defined else [])
-          -%}
+          {%- set labels = namespace(entities=[]) -%}
+
+          {%- if source.label_id is defined -%}
+            {# Normalize to list #}
+            {%- set label_ids = source.label_id 
+              if source.label_id is list
+              else [source.label_id]
+            -%}
+
+            {%- for label in label_ids %}
+              {# 1. Directly labeled entities #}
+              {%- set labels.entities = labels.entities + (label_entities(label) or []) -%}
+
+              {# 2. Devices with label → their entities #}
+              {%- set labeled_devices = label_devices(label) or [] -%}
+              {%- set labels.entities = labels.entities + (labeled_devices | map('device_entities') | list | sum(start=[])) -%}
+
+              {# 3. Areas with label → their entities #}
+              {%- set labeled_areas = label_areas(label) or [] -%}
+              {%- set labels.entities = labels.entities + (labeled_areas | map('area_entities') | list | sum(start=[])) -%}
+            {%- endfor -%}
+          {%- endif -%}
 
           {# Merge, filter and de-duplicate light entities #}
           {%- do returns(
