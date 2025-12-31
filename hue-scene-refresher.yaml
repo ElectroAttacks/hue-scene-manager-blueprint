@@ -454,12 +454,7 @@ actions:
       - alias: Restore off state for state excluded lights
         repeat:
           for_each: "{{ area_snapshot.room.force_off_lights | default([]) }}"
-          sequence:
-            - alias: Light is on
-              condition: template
-              value_template: >
-                {{ is_state(repeat.item, 'on') }}
-                
+          sequence:       
             - alias: Restore individual light state
               action: light.turn_off
               target:
@@ -531,11 +526,6 @@ actions:
               repeat:
                 for_each: "{{ area_snapshot.room.force_off_lights | default([]) }}"
                 sequence:
-                  - alias: Light is on
-                    condition: template
-                    value_template: >
-                      {{ is_state(repeat.item, 'on') }}
-                
                   - alias: Restore individual light state
                     action: light.turn_off
                     target:
