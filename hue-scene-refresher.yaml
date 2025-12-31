@@ -58,24 +58,38 @@ blueprint:
         transition_time:
           name: Transition Time
           description: >
-            Transition duration (in seconds) used when activating scenes or restoring brightness.
-          default: 3
+            Transition duration (in seconds) used when restoring brightness.
+          default: 2
           selector:
             number:
-              min: 1
+              min: 0
               max: 100
               step: 1
               unit_of_measurement: sec
               mode: slider
 
+        scene_transition_time:
+          name: Scene Transition Time
+          description: >
+            Transition duration (in seconds) used when activating scenes.
+          default: 4
+          selector:
+            number:
+              min: 0
+              max: 100
+              step: 1
+              unit_of_measurement: sec
+              mode: slider
+              
         dynamic_scene_speed:
           name: Dynamic Scene Speed
           description: >
-            Playback speed for dynamic Hue scenes. Lower values are slower.
-          default: 60
+            (Default) Playback speed for dynamic Hue scenes. If set to -1, the default speed of the scene will be used; Otherwise the scene will use the provided value instead. 
+            Lower values are slower.
+          default: -1
           selector:
             number:
-              min: 1
+              min: -1
               max: 100
               step: 1
               mode: slider
@@ -189,7 +203,7 @@ variables:
   brightness_restore_exclusions: !input targets_excluded_from_brightness_restore
   allow_active_effects: !input ignore_active_effects
   dynamic_scene_speed: !input dynamic_scene_speed
-  scene_transition_time: !input transition_time
+  scene_transition_time: !input scene_transition_time
 
 actions:
   - delay: !input state_trigger_delay
@@ -325,10 +339,16 @@ actions:
         %}
 
         {% for group in groups %}
-          {% set members = state_attr(group,'entity_id') or [] %}
-
-          {% set lights =
-            expand(members)
+          {% set members = expand(state_attr(group,'entity_id') or []) %}
+          
+          {% set force_off = members 
+            | selectattr('entity_id', 'in', resolved_targets.state_excluded) 
+            | selectattr('state', 'eq', 'off') 
+            | map(attribute='entity_id') 
+            | list
+          %}
+          
+          {% set lights = members
             | rejectattr('entity_id','in', resolved_targets.state_excluded)
             | selectattr('state','ne','unknown')
             | list
@@ -353,20 +373,22 @@ actions:
             effects_clear
           %}
 
-          {% set scenes =
-            states.scene
-            | selectattr('attributes.group_name', 'eq', state_attr(group, 'friendly_name'))
+          {% set last_scene =
+            expand(device_entities(device_id(group)))
+            | selectattr('domain', 'eq', 'scene')
             | selectattr('state','ne','unknown') 
             | sort(attribute='state', reverse=true) 
             | map(attribute='entity_id')
             | list
+            | first
           %}
 
           {% set group_data = {
             'entity_id': group,
             'brightness': state_attr(group,'brightness'),
+            'scene_speed': (state_attr(last_scene, 'speed') | default(50)) * 100,
             'is_area_on': is_area_on,
-            'last_scene': scenes | first
+            'last_scene': last_scene
           } %}
 
           {% if group == area_context.room %}
@@ -380,7 +402,8 @@ actions:
             {% endfor %}
 
             {% set group_data = group_data | combine({
-              'active_lights': light_snapshot.items
+              'active_lights': light_snapshot.items,
+              'force_off_lights': force_off
             }) %}
 
             {% set snapshot.room = group_data %}
@@ -407,7 +430,9 @@ actions:
 
             {% set data = {
               'dynamic': area_snapshot.room.entity_id in resolved_targets.dynamic,
-              'speed': dynamic_scene_speed,
+              'speed': dynamic_scene_speed 
+                if dynamic_scene_speed > -1 
+                else area_snapshot.room.scene_speed,
               'transition': scene_transition_time
             } %}
 
@@ -430,7 +455,7 @@ actions:
 
       - alias: Restore brightness for active zones in room
         repeat:
-          for_each: "{{ area_snapshot.zones }}"
+          for_each: "{{ area_snapshot.zones | default([]) }}"
           sequence:
             - alias: Zone is allowed for brightness restoration
               condition: template
@@ -440,7 +465,7 @@ actions:
             - alias: Zone brightness differs from snapshot
               condition: template
               value_template: >
-                {{ state_attr(repeat.item.entity_id,'brightness') != repeat.item.brightness }}
+                {{ repeat.item.brightness is defined and state_attr(repeat.item.entity_id,'brightness') != repeat.item.brightness }}
 
             - alias: Restore zone brightness
               action: light.turn_on
@@ -448,12 +473,12 @@ actions:
                 entity_id: "{{ repeat.item.entity_id }}"
               data:
                 brightness: "{{ repeat.item.brightness }}"
-                transition: "{{ scene_transition_time }}"
+                transition: !input transition_time
 
     else:
       - alias: Refresh scenes for zones only (room not fully ON)
         repeat:
-          for_each: "{{ area_snapshot.zones }}"
+          for_each: "{{ area_snapshot.zones | default([]) }}"
           sequence:
             - alias: Build scene activation data for zone
               variables:
@@ -465,7 +490,9 @@ actions:
 
                   {% set data = {
                     'dynamic': repeat.item.entity_id in resolved_targets.dynamic,
-                    'speed': dynamic_scene_speed,
+                    'speed': dynamic_scene_speed 
+                      if dynamic_scene_speed > -1 
+                      else repeat.item.scene_speed,
                     'transition': scene_transition_time
                   } %}
 
@@ -483,6 +510,17 @@ actions:
                 entity_id: "{{ repeat.item.last_scene }}"
               data: "{{ scene_data }}"
 
+  - alias: Restore off state for state excluded lights
+    repeat:
+      for_each: "{{ area_snapshot.room.force_off_lights | default([]) }}"
+      sequence:
+        - alias: Restore individual light state
+          action: light.turn_off
+          target:
+            entity_id: "{{ repeat.item }}"
+          data:
+            transition: !input transition_time
+            
   - alias: Wait for scene transition to complete
     delay: "{{ scene_transition_time }}"
     
@@ -498,7 +536,7 @@ actions:
         - alias: Light brightness differs from snapshot
           condition: template
           value_template: >
-            {{ state_attr(repeat.item.entity_id,'brightness') != repeat.item.brightness }}
+            {{ repeat.item.brightness is defined and state_attr(repeat.item.entity_id,'brightness') != repeat.item.brightness }}
 
         - alias: Restore individual light brightness
           action: light.turn_on
@@ -506,4 +544,4 @@ actions:
             entity_id: "{{ repeat.item.entity_id }}"
           data:
             brightness: "{{ repeat.item.brightness }}"
-            transition: "{{ scene_transition_time }}"
+            transition: !input transition_time
