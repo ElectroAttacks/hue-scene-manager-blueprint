@@ -166,34 +166,14 @@ triggers:
 
   - triggers: !input alternative_triggers
 
-variables:
-  state_trigger_delay: !input state_trigger_delay
-  dynamic_scene_targets: !input targets_with_dynamic_scenes
-  state_check_exclusions: !input targets_excluded_from_state_check
-  brightness_restore_exclusions: !input targets_excluded_from_brightness_restore
-  allow_active_effects: !input ignore_active_effects
-  dynamic_scene_speed: !input dynamic_scene_speed
-  scene_transition_time: !input scene_transition_time
-
 conditions:
   - alias: Pass if triggered by state change or valid Hue light
     condition: or
     conditions:
-      - alias: Triggered by Hue state change and kept state for x seconds
-        condition: and
-        conditions:
-          - alias: Triggered by Hue state change
-            condition: trigger
-            id: state_change
+      - alias: Triggered by Hue state change
+        condition: trigger
+        id: state_change
       
-          - alias: Light has been ON for at least X seconds
-            condition: template
-            value_template: >
-              {{ 
-                states[trigger.entity_id] is not none and
-                (now() - states[trigger.entity_id].last_changed).total_seconds() >= state_trigger_delay
-              }}
-
       - alias: Triggered externally but resolved to Hue light
         condition: and
         conditions:
@@ -217,9 +197,18 @@ conditions:
               {% set ids = device_attr(trigger.entity_id, 'identifiers') or [] %}
               {{ ids | selectattr(0, 'eq', 'hue') | list | count > 0 }}
 
-
+variables:
+  dynamic_scene_targets: !input targets_with_dynamic_scenes
+  state_check_exclusions: !input targets_excluded_from_state_check
+  brightness_restore_exclusions: !input targets_excluded_from_brightness_restore
+  allow_active_effects: !input ignore_active_effects
+  dynamic_scene_speed: !input dynamic_scene_speed
+  scene_transition_time: !input scene_transition_time
 
 actions:
+  - alias: Delay the execution until a for: field is added
+    delay: !input state_trigger_delay
+    
   - alias: Resolve target selectors into concrete light entities
     variables:
       resolved_targets: >
