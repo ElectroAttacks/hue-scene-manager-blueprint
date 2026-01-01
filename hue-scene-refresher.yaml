@@ -492,10 +492,6 @@ actions:
           - alias: Restore off state enabled
             condition: template
             value_template: "{{ turn_off_state_excluded_lights }}"
-           
-          - alias: Any lights within the collection
-            condition: template
-            value_template: "{{ area_snapshot.room.force_off_lights | count > 0 }}"    
         then:
           - alias: Restore individual light state
             action: light.turn_off
@@ -566,11 +562,7 @@ actions:
               if:
                 - alias: Restore off state enabled
                   condition: template
-                  value_template: "{{ turn_off_state_excluded_lights }}"
-                  
-                - alias: Any lights within the collection
-                  condition: template
-                  value_template: "{{ area_snapshot.room.force_off_lights | count > 0 }}"          
+                  value_template: "{{ turn_off_state_excluded_lights }}" 
               then:
                 - alias: Restore individual light state
                   action: light.turn_off
