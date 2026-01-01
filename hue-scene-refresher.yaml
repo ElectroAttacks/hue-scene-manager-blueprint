@@ -182,6 +182,7 @@ triggers:
   - triggers: !input alternative_triggers
 
 variables:
+  brightness_transition_time: !input transition_time
   scene_transition_time: !input scene_transition_time
   dynamic_scene_speed: !input dynamic_scene_speed
   dynamic_scene_targets: !input targets_with_dynamic_scenes
@@ -551,7 +552,7 @@ actions:
               Lights excluded from state evaluation that are currently OFF.
               These may be turned ON by scene activation and must be corrected.
             #}
-            {% set force_off = members
+            {% set state_excluded = members
               | selectattr('entity_id', 'in', resolved_targets.state_excluded)
               | selectattr('state', 'eq', 'off')
               | map(attribute='entity_id')
@@ -560,7 +561,7 @@ actions:
 
             {% set group_data = group_data | combine({
               'active_lights': light_snapshot.items,
-              'force_off_lights': force_off
+              'state_excluded_lights': state_excluded
             }) %}
 
             {% set snapshot.room = group_data %}
@@ -625,12 +626,12 @@ actions:
           - alias: "Turn off excluded lights in room"
             action: light.turn_off
             data:
-              transition: !input transition_time   
+              transition: "{{ brightness_transition_time }}" 
             target:
-              entity_id: "{{ area_snapshot.room.force_off_lights }}"
+              entity_id: "{{ area_snapshot.room.state_excluded_lights }}"
                                      
       - alias: "Wait for room scene transition to settle"
-        delay: "{{ [scene_transition_time, 0.5] | max }}"
+        delay: "{{ [scene_transition_time / 10, 0.25] | max }}"
 
       - alias: "Restore brightness for overlapping zones"
         repeat:
@@ -645,12 +646,12 @@ actions:
               continue_on_error: true
               data:
                 brightness: "{{ repeat.item.brightness }}"
-                transition: !input transition_time
+                transition: "{{ brightness_transition_time }}"
               target:
                 entity_id: "{{ repeat.item.entity_id }}"
 
       - alias: "Wait after zone brightness restoration"
-        delay: !input transition_time
+        delay: "{{ [brightness_transition_time / 10, 0.25] | max }}"
 
     else:
       - alias: "Activate scenes for fully-on zones only"
@@ -695,12 +696,12 @@ actions:
           - alias: "Turn off excluded lights in room"
             action: light.turn_off
             data:
-              transition: !input transition_time
+              transition: "{{ brightness_transition_time }}"
             target:
-              entity_id: "{{ area_snapshot.room.force_off_lights }}"
+              entity_id: "{{ area_snapshot.room.state_excluded_lights }}"
                 
       - alias: "Wait for zone scene transitions to settle"
-        delay: "{{ [scene_transition_time, 0.5] | max }}"
+        delay: "{{ [scene_transition_time / 10, 0.25] | max }}"
     
   - alias: "Restore per-light brightness in room"
     repeat:
@@ -715,6 +716,6 @@ actions:
           continue_on_error: true
           data:
             brightness: "{{ repeat.item.brightness }}"
-            transition: !input transition_time
+            transition: "{{ brightness_transition_time }}"
           target:
             entity_id: "{{ repeat.item.entity_id }}"
