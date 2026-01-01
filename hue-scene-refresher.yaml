@@ -496,7 +496,7 @@ actions:
           - alias: Restore individual light state
             action: light.turn_off
             target:
-              entity_id: "{{ area_snapshot.room.force_off_lights | select('is_state', 'on') | list }}"
+              entity_id: "{{ area_snapshot.room.force_off_lights }}"
             data:
               transition: !input transition_time    
                             
@@ -505,7 +505,7 @@ actions:
 
       - alias: Restore brightness for active zones in room
         repeat:
-          for_each: "{{ area_snapshot.zones | default([]) }}"
+          for_each: "{{ area_snapshot.zones }}"
           sequence:
             - alias: Zone is allowed for brightness restoration
               condition: template
@@ -526,7 +526,7 @@ actions:
     else:
       - alias: Refresh scenes for zones only (room not fully ON)
         repeat:
-          for_each: "{{ area_snapshot.zones | default([]) }}"
+          for_each: "{{ area_snapshot.zones }}"
           sequence:
             - alias: Build scene activation data for zone
               variables:
@@ -567,7 +567,7 @@ actions:
                 - alias: Restore individual light state
                   action: light.turn_off
                   target:
-                    entity_id: "{{ area_snapshot.room.force_off_lights | select('is_state', 'on') | list }}"
+                    entity_id: "{{ area_snapshot.room.force_off_lights }}"
                   data:
                     transition: !input transition_time    
             
@@ -576,7 +576,7 @@ actions:
     
   - alias: Restore brightness for individual lights in room
     repeat:
-      for_each: "{{ area_snapshot.room.active_lights | default([]) }}"
+      for_each: "{{ area_snapshot.room.active_lights }}"
       sequence:
         - alias: Light is allowed for brightness restoration
           condition: template
