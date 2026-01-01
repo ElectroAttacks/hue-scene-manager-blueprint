@@ -206,7 +206,7 @@ variables:
   scene_transition_time: !input scene_transition_time
 
 actions:
-  - alias: Delay the execution until a for: field is added
+  - alias: Delay the execution until a better state trigger is available
     delay: !input state_trigger_delay
     
   - alias: Resolve target selectors into concrete light entities
