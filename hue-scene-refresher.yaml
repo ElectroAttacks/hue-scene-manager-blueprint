@@ -146,8 +146,7 @@ blueprint:
               entity:
                 domain: light
 
-mode: queued
-max: 2
+mode: restart
 max_exceeded: info
 
 triggers:
