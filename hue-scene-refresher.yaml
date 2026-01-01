@@ -120,7 +120,15 @@ blueprint:
           default: false
           selector:
             boolean:
-
+        
+        turn_off_state_excluded_lights:
+          name: Turn- off State Check Excluded Targets
+          description: >
+            If enabled, all targets that have been excluded from the state check will be automatically turned- off again, after the scene got activated.
+          default: true
+          selector:
+            boolean:
+            
         targets_excluded_from_state_check:
           name: Targets Excluded from State Check
           description: >
@@ -198,13 +206,14 @@ conditions:
               {{ ids | selectattr(0, 'eq', 'hue') | list | count > 0 }}
 
 variables:
+  scene_transition_time: !input scene_transition_time
+  dynamic_scene_speed: !input dynamic_scene_speed
   dynamic_scene_targets: !input targets_with_dynamic_scenes
   state_check_exclusions: !input targets_excluded_from_state_check
-  brightness_restore_exclusions: !input targets_excluded_from_brightness_restore
   allow_active_effects: !input ignore_active_effects
-  dynamic_scene_speed: !input dynamic_scene_speed
-  scene_transition_time: !input scene_transition_time
-
+  turn_off_state_excluded_lights: !input turn_off_state_excluded_lights
+  brightness_restore_exclusions: !input targets_excluded_from_brightness_restore
+  
 actions:
   - alias: Delay the execution until a better state trigger is available
     delay: !input state_trigger_delay
@@ -420,7 +429,7 @@ actions:
             {# Capture state excluded lights that are off #}
             {% set force_off = members 
               | selectattr('entity_id', 'in', resolved_targets.state_excluded) 
-              | selectattr('state', 'eq', 'off') 
+              | selectattr('state', 'ne', 'unknown')
               | map(attribute='entity_id') 
               | list
             %}
@@ -476,6 +485,11 @@ actions:
           data: "{{ scene_data }}"
           
         - sequence:
+          - alias: Restore off state enabled
+            condition: template
+            value_template: >
+              {{ turn_off_state_excluded_lights }}
+            
           - delay: 0.125
           
           - alias: Restore off state for state excluded lights
@@ -549,6 +563,11 @@ actions:
                 data: "{{ scene_data }}"
                 
               - sequence:
+                - alias: Restore off state enabled
+                  condition: template
+                  value_template: >
+                    {{ turn_off_state_excluded_lights }}
+                    
                 - delay: 0.125
                 
                 - alias: Restore off state for state excluded lights
