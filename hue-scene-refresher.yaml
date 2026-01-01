@@ -362,7 +362,7 @@ actions:
     if:
       - alias: Hue room could not be resolved
         condition: template
-        value_template: "{{ area_snapshot.room is none }}"
+        value_template: "{{ area_context.room is none }}"
     then:
       - alias: Log the error for debugging
         action: system_log.write
