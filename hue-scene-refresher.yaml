@@ -500,7 +500,7 @@ actions:
           - alias: Restore individual light state
             action: light.turn_off
             target:
-              entity_id: "{{ area_snapshot.room.force_off_lights }}"
+              entity_id: "{{ area_snapshot.room.force_off_lights | select('is_state', 'on') | list }}"
             data:
               transition: !input transition_time    
                             
@@ -575,7 +575,7 @@ actions:
                 - alias: Restore individual light state
                   action: light.turn_off
                   target:
-                    entity_id: "{{ area_snapshot.room.force_off_lights }}"
+                    entity_id: "{{ area_snapshot.room.force_off_lights | select('is_state', 'on') | list }}"
                   data:
                     transition: !input transition_time    
             
