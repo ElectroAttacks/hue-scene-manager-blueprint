@@ -433,7 +433,7 @@ actions:
             {# Capture state excluded lights that are off #}
             {% set force_off = members 
               | selectattr('entity_id', 'in', resolved_targets.state_excluded) 
-              | selectattr('state', 'ne', 'unknown')
+              | selectattr('state', 'eq', 'off')
               | map(attribute='entity_id') 
               | list
             %}
