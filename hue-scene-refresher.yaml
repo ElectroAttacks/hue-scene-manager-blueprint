@@ -631,7 +631,7 @@ actions:
               entity_id: "{{ area_snapshot.room.state_excluded_lights }}"
                                      
       - alias: "Wait for room scene transition to settle"
-        delay: "{{ [scene_transition_time / 10, 0.25] | max }}"
+        delay: "{{ [scene_transition_time / 4, 0.25] | max }}"
 
       - alias: "Restore brightness for overlapping zones"
         repeat:
@@ -651,7 +651,7 @@ actions:
                 entity_id: "{{ repeat.item.entity_id }}"
 
       - alias: "Wait after zone brightness restoration"
-        delay: "{{ [brightness_transition_time / 10, 0.25] | max }}"
+        delay: "{{ [brightness_transition_time / 4, 0.25] | max }}"
 
     else:
       - alias: "Activate scenes for fully-on zones only"
@@ -701,7 +701,7 @@ actions:
               entity_id: "{{ area_snapshot.room.state_excluded_lights }}"
                 
       - alias: "Wait for zone scene transitions to settle"
-        delay: "{{ [scene_transition_time / 10, 0.25] | max }}"
+        delay: "{{ [scene_transition_time / 4, 0.25] | max }}"
     
   - alias: "Restore per-light brightness in room"
     repeat:
