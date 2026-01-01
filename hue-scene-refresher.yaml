@@ -146,7 +146,7 @@ blueprint:
               entity:
                 domain: light
 
-mode: single
+mode: restart
 max_exceeded: info
 
 triggers:
@@ -466,21 +466,25 @@ actions:
             {% endif %}
 
             {{ data }}
-
-      - alias: Activate last known scene for room
-        action: hue.activate_scene
-        target:
-          entity_id: "{{ area_snapshot.room.last_scene }}"
-        data: "{{ scene_data }}"
-
-      - alias: Restore off state for state excluded lights
-        repeat:
-          for_each: "{{ area_snapshot.room.force_off_lights | default([]) }}"
-          sequence:       
-            - alias: Restore individual light state
-              action: light.turn_off
-              target:
-                entity_id: "{{ repeat.item }}"
+            
+      - parallel:
+        - alias: Activate last known scene for room
+          action: hue.activate_scene
+          target:
+            entity_id: "{{ area_snapshot.room.last_scene }}"
+          data: "{{ scene_data }}"
+          
+        - sequence:
+          - delay: 1
+          
+          - alias: Restore off state for state excluded lights
+            repeat:
+              for_each: "{{ area_snapshot.room.force_off_lights | default([]) }}"
+              sequence:       
+                - alias: Restore individual light state
+                  action: light.turn_off
+                  target:
+                    entity_id: "{{ repeat.item }}"
             
       - alias: Wait for scene transition to complete
         delay: "{{ scene_transition_time }}"
@@ -535,21 +539,25 @@ actions:
                   {% endif %}
 
                   {{ data }}
-
-            - alias: Activate last known scene for zone
-              action: hue.activate_scene
-              target:
-                entity_id: "{{ repeat.item.last_scene }}"
-              data: "{{ scene_data }}"
             
-            - alias: Restore off state for state excluded lights
-              repeat:
-                for_each: "{{ area_snapshot.room.force_off_lights | default([]) }}"
-                sequence:
-                  - alias: Restore individual light state
-                    action: light.turn_off
-                    target:
-                      entity_id: "{{ repeat.item }}"
+            - parallel:
+              - alias: Activate last known scene for zone
+                action: hue.activate_scene
+                target:
+                  entity_id: "{{ repeat.item.last_scene }}"
+                data: "{{ scene_data }}"
+                
+              - sequence:
+                - delay: 1
+                
+                - alias: Restore off state for state excluded lights
+                  repeat:
+                    for_each: "{{ area_snapshot.room.force_off_lights | default([]) }}"
+                    sequence:
+                      - alias: Restore individual light state
+                        action: light.turn_off
+                        target:
+                          entity_id: "{{ repeat.item }}"
             
             - alias: Wait for scene transition to complete
               delay: "{{ scene_transition_time }}"
