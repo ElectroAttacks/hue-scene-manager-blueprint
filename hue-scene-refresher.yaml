@@ -358,6 +358,23 @@ actions:
 
         {{ { 'room': room_entity, 'zones': ns.zones | unique | list } }}
 
+  - alias: Abort if no Hue room could be resolved
+    if:
+      - alias: Hue room could not be resolved
+        condition: template
+        value_template: "{{ area_snapshot.room is none }}"
+    then:
+      - alias: Log the error for debugging
+        action: system_log.write
+        data:
+          level: error
+          message: >
+            Hue Scene Refresher aborted: No Hue room could be resolved for trigger {{ trigger.entity_id }}
+      
+      - alias: Stop the automation
+        stop: "No Hue room resolved"
+        error: true
+        
   - alias: Snapshot current scene, brightness and state for affected areas
     variables:
       area_snapshot: >
@@ -558,21 +575,21 @@ actions:
                 entity_id: "{{ repeat.item.last_scene }}"
               data: "{{ scene_data }}"
                 
-            - alias: Restore state excluded lights off state
-              if:
-                - alias: Restore off state enabled
-                  condition: template
-                  value_template: "{{ turn_off_state_excluded_lights }}" 
-              then:
-                - alias: Restore individual light state
-                  action: light.turn_off
-                  target:
-                    entity_id: "{{ area_snapshot.room.force_off_lights }}"
-                  data:
-                    transition: !input transition_time    
+      - alias: Restore state excluded lights off state
+        if:
+          - alias: Restore off state enabled
+            condition: template
+            value_template: "{{ turn_off_state_excluded_lights }}" 
+        then:
+          - alias: Restore individual light state
+            action: light.turn_off
+            target:
+              entity_id: "{{ area_snapshot.room.force_off_lights }}"
+            data:
+              transition: !input transition_time    
             
-      - alias: Wait for scene transition to complete
-        delay: "{{ scene_transition_time }}"
+  - alias: Wait for scene transition to complete
+    delay: "{{ scene_transition_time }}"
     
   - alias: Restore brightness for individual lights in room
     repeat:
