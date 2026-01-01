@@ -147,7 +147,7 @@ blueprint:
                 domain: light
 
 mode: queued
-max: 1
+max: 2
 max_exceeded: info
 
 triggers:
