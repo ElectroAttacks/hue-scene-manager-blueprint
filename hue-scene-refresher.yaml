@@ -486,20 +486,24 @@ actions:
         target:
           entity_id: "{{ area_snapshot.room.last_scene }}"
         data: "{{ scene_data }}"
-
-      - alias: Restore off state enabled
-        condition: template
-        value_template: "{{ turn_off_state_excluded_lights }}"
-
-      - alias: Restore off state for state excluded lights
-        repeat:
-          for_each: "{{ area_snapshot.room.force_off_lights | default([]) }}"
-          sequence:       
-            - alias: Restore individual light state
-              action: light.turn_off
-              target:
-                entity_id: "{{ repeat.item }}"
-            
+      
+      - alias: Restore state excluded lights off state
+        if:
+          - alias: Restore off state enabled
+            condition: template
+            value_template: "{{ turn_off_state_excluded_lights }}"
+        then:
+          - alias: Restore off state for state excluded lights
+            repeat:
+              for_each: "{{ area_snapshot.room.force_off_lights | default([]) }}"
+              sequence:       
+                - alias: Restore individual light state
+                  action: light.turn_off
+                  target:
+                    entity_id: "{{ repeat.item }}"
+                  data:
+                    transition: !input transition_time
+                    
       - alias: Wait for scene transition to complete
         delay: "{{ scene_transition_time }}"
 
@@ -558,21 +562,25 @@ actions:
                 entity_id: "{{ repeat.item.last_scene }}"
               data: "{{ scene_data }}"
                 
-            - alias: Restore off state enabled
-              condition: template
-              value_template: "{{ turn_off_state_excluded_lights }}"
-
-            - alias: Restore off state for state excluded lights
-              repeat:
-                for_each: "{{ area_snapshot.room.force_off_lights | default([]) }}"
-                sequence:
-                  - alias: Restore individual light state
-                    action: light.turn_off
-                    target:
-                      entity_id: "{{ repeat.item }}"
+            - alias: Restore state excluded lights off state
+              if:
+                - alias: Restore off state enabled
+                  condition: template
+                  value_template: "{{ turn_off_state_excluded_lights }}"
+              then:
+                - alias: Restore off state for state excluded lights
+                  repeat:
+                    for_each: "{{ area_snapshot.room.force_off_lights | default([]) }}"
+                    sequence:
+                      - alias: Restore individual light state
+                        action: light.turn_off
+                        target:
+                          entity_id: "{{ repeat.item }}"
+                        data:
+                          transition: !input transition_time
             
-            - alias: Wait for scene transition to complete
-              delay: "{{ scene_transition_time }}"
+      - alias: Wait for scene transition to complete
+        delay: "{{ scene_transition_time }}"
     
   - alias: Restore brightness for individual lights in room
     repeat:
