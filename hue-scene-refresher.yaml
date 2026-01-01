@@ -174,14 +174,109 @@ triggers:
 
   - triggers: !input alternative_triggers
 
+variables:
+  scene_transition_time: !input scene_transition_time
+  dynamic_scene_speed: !input dynamic_scene_speed
+  dynamic_scene_targets: !input targets_with_dynamic_scenes
+  state_check_exclusions: !input targets_excluded_from_state_check
+  allow_active_effects: !input ignore_active_effects
+  turn_off_state_excluded_lights: !input turn_off_state_excluded_lights
+  brightness_restore_exclusions: !input targets_excluded_from_brightness_restore
+  resolved_targets: >
+    {#
+      Converts Home Assistant target selectors (entity / device / area / label)
+      into flat, unique lists of light entities.
+    #}
+
+    {%- macro resolve_targets(source, returns) -%}
+
+      {# Direct entity targets #}
+      {%- set entities = source.entity_id 
+        if source.entity_id is list
+        else ([source.entity_id] 
+          if source.entity_id is defined 
+          else [])
+      -%}
+
+      {# Hierarchical targets #}
+      {%- set floors = (source.floor_id | map('floor_entities') | list | sum(start=[]))
+        if source.floor_id is list 
+        else (floor_entities(source.floor_id) 
+          if source.floor_id is defined 
+          else [])
+      -%}
+
+      {%- set areas = (source.area_id | map('area_entities') | list | sum(start=[]))
+        if source.area_id is list 
+        else (area_entities(source.area_id) 
+          if source.area_id is defined 
+          else [])
+      -%}
+
+      {%- set devices = (source.device_id | map('device_entities') | list | sum(start=[]))
+        if source.device_id is list 
+        else (device_entities(source.device_id) 
+          if source.device_id is defined 
+          else [])
+      -%}
+
+      {%- set labels = namespace(entities=[]) -%}
+
+      {%- if source.label_id is defined -%}
+        {# Normalize to list #}
+        {%- set label_ids = source.label_id 
+          if source.label_id is list
+          else [source.label_id]
+        -%}
+
+        {%- for label in label_ids %}
+          {# 1. Directly labeled entities #}
+          {%- set labels.entities = labels.entities + (label_entities(label) or []) -%}
+
+          {# 2. Devices with label → their entities #}
+          {%- set labeled_devices = label_devices(label) or [] -%}
+          {%- set labels.entities = labels.entities + (labeled_devices | map('device_entities') | list | sum(start=[])) -%}
+
+          {# 3. Areas with label → their entities #}
+          {%- set labeled_areas = label_areas(label) or [] -%}
+          {%- set labels.entities = labels.entities + (labeled_areas | map('area_entities') | list | sum(start=[])) -%}
+        {%- endfor -%}
+      {%- endif -%}
+
+      {# Merge, filter and de-duplicate light entities #}
+      {%- do returns(
+        (entities + floors + areas + devices + labels.entities)
+          | select('match', '^light\.')
+          | unique
+          | list
+      ) -%}
+
+    {%- endmacro -%}
+
+    {% set fn = resolve_targets | as_function %}
+    {{
+      {
+        'dynamic': fn(dynamic_scene_targets),
+        'state_excluded': fn(state_check_exclusions),
+        'brightness_excluded': fn(brightness_restore_exclusions)
+      }
+    }}
+    
 conditions:
   - alias: Pass if triggered by state change or valid Hue light
     condition: or
     conditions:
-      - alias: Triggered by Hue state change
-        condition: trigger
-        id: state_change
-      
+      - alias: Triggered by Hue state change without being blacklisted
+        condition: and
+        conditions:
+          - alias: Triggered by Hue state change
+            condition: trigger
+            id: state_change
+            
+          - alias: Not state check excluded
+            condition: template
+            value_template: "{{ trigger.entity_id not in resolved_targets.state_excluded }}"
+            
       - alias: Triggered externally but resolved to Hue light
         condition: and
         conditions:
@@ -204,102 +299,11 @@ conditions:
             value_template: >
               {% set ids = device_attr(trigger.entity_id, 'identifiers') or [] %}
               {{ ids | selectattr(0, 'eq', 'hue') | list | count > 0 }}
-
-variables:
-  scene_transition_time: !input scene_transition_time
-  dynamic_scene_speed: !input dynamic_scene_speed
-  dynamic_scene_targets: !input targets_with_dynamic_scenes
-  state_check_exclusions: !input targets_excluded_from_state_check
-  allow_active_effects: !input ignore_active_effects
-  turn_off_state_excluded_lights: !input turn_off_state_excluded_lights
-  brightness_restore_exclusions: !input targets_excluded_from_brightness_restore
-  
+ 
 actions:
   - alias: Delay the execution until a better state trigger is available
     delay: !input state_trigger_delay
     
-  - alias: Resolve target selectors into concrete light entities
-    variables:
-      resolved_targets: >
-        {#
-          Converts Home Assistant target selectors (entity / device / area / label)
-          into flat, unique lists of light entities.
-        #}
-
-        {%- macro resolve_targets(source, returns) -%}
-
-          {# Direct entity targets #}
-          {%- set entities = source.entity_id 
-            if source.entity_id is list
-            else ([source.entity_id] 
-              if source.entity_id is defined 
-              else [])
-          -%}
-
-          {# Hierarchical targets #}
-          {%- set floors = (source.floor_id | map('floor_entities') | list | sum(start=[]))
-            if source.floor_id is list 
-            else (floor_entities(source.floor_id) 
-              if source.floor_id is defined 
-              else [])
-          -%}
-
-          {%- set areas = (source.area_id | map('area_entities') | list | sum(start=[]))
-            if source.area_id is list 
-            else (area_entities(source.area_id) 
-              if source.area_id is defined 
-              else [])
-          -%}
-
-          {%- set devices = (source.device_id | map('device_entities') | list | sum(start=[]))
-            if source.device_id is list 
-            else (device_entities(source.device_id) 
-              if source.device_id is defined 
-              else [])
-          -%}
-
-          {%- set labels = namespace(entities=[]) -%}
-
-          {%- if source.label_id is defined -%}
-            {# Normalize to list #}
-            {%- set label_ids = source.label_id 
-              if source.label_id is list
-              else [source.label_id]
-            -%}
-
-            {%- for label in label_ids %}
-              {# 1. Directly labeled entities #}
-              {%- set labels.entities = labels.entities + (label_entities(label) or []) -%}
-
-              {# 2. Devices with label → their entities #}
-              {%- set labeled_devices = label_devices(label) or [] -%}
-              {%- set labels.entities = labels.entities + (labeled_devices | map('device_entities') | list | sum(start=[])) -%}
-
-              {# 3. Areas with label → their entities #}
-              {%- set labeled_areas = label_areas(label) or [] -%}
-              {%- set labels.entities = labels.entities + (labeled_areas | map('area_entities') | list | sum(start=[])) -%}
-            {%- endfor -%}
-          {%- endif -%}
-
-          {# Merge, filter and de-duplicate light entities #}
-          {%- do returns(
-            (entities + floors + areas + devices + labels.entities)
-              | select('match', '^light\.')
-              | unique
-              | list
-          ) -%}
-
-        {%- endmacro -%}
-
-        {% set fn = resolve_targets | as_function %}
-        {{
-          {
-            'dynamic': fn(dynamic_scene_targets),
-            'state_excluded': fn(state_check_exclusions),
-            'brightness_excluded': fn(brightness_restore_exclusions)
-          }
-        }}
-
   - alias: Determine Hue room and related zones for trigger entity
     variables:
       area_context: >
@@ -485,8 +489,7 @@ actions:
 
       - alias: Restore off state enabled
         condition: template
-        value_template: >
-          {{ turn_off_state_excluded_lights }}
+        value_template: "{{ turn_off_state_excluded_lights }}"
 
       - alias: Restore off state for state excluded lights
         repeat:
@@ -506,13 +509,11 @@ actions:
           sequence:
             - alias: Zone is allowed for brightness restoration
               condition: template
-              value_template: >
-                {{ repeat.item.entity_id not in resolved_targets.brightness_excluded }}
+              value_template: "{{ repeat.item.entity_id not in resolved_targets.brightness_excluded }}"
 
             - alias: Zone brightness differs from snapshot
               condition: template
-              value_template: >
-                {{ repeat.item.brightness is defined and state_attr(repeat.item.entity_id,'brightness') != repeat.item.brightness }}
+              value_template: "{{ repeat.item.brightness is defined and state_attr(repeat.item.entity_id,'brightness') != repeat.item.brightness }}"
 
             - alias: Restore zone brightness
               action: light.turn_on
@@ -559,8 +560,7 @@ actions:
                 
             - alias: Restore off state enabled
               condition: template
-              value_template: >
-                {{ turn_off_state_excluded_lights }}
+              value_template: "{{ turn_off_state_excluded_lights }}"
 
             - alias: Restore off state for state excluded lights
               repeat:
@@ -580,13 +580,11 @@ actions:
       sequence:
         - alias: Light is allowed for brightness restoration
           condition: template
-          value_template: >
-            {{ repeat.item.entity_id not in resolved_targets.brightness_excluded }}
+          value_template: "{{ repeat.item.entity_id not in resolved_targets.brightness_excluded }}"
 
         - alias: Light brightness differs from snapshot
           condition: template
-          value_template: >
-            {{ repeat.item.brightness is defined and state_attr(repeat.item.entity_id,'brightness') != repeat.item.brightness }}
+          value_template: "{{ repeat.item.brightness is defined and state_attr(repeat.item.entity_id,'brightness') != repeat.item.brightness }}"
 
         - alias: Restore individual light brightness
           action: light.turn_on
