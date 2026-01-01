@@ -475,7 +475,7 @@ actions:
           data: "{{ scene_data }}"
           
         - sequence:
-          - delay: 0.5
+          - delay: 0.25
           
           - alias: Restore off state for state excluded lights
             repeat:
@@ -548,7 +548,7 @@ actions:
                 data: "{{ scene_data }}"
                 
               - sequence:
-                - delay: 0.5
+                - delay: 0.25
                 
                 - alias: Restore off state for state excluded lights
                   repeat:
