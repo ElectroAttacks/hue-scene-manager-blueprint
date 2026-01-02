@@ -777,3 +777,7 @@ actions:
             transition: "{{ brightness_transition_time }}"
           target:
             entity_id: "{{ repeat.item[1] }}"
+
+  - alias: "Stop the automation successfully"
+    stop: "Hue scene refresh complete"
+    error: false
