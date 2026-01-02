@@ -721,8 +721,11 @@ actions:
               transition: "{{ brightness_transition_time }}"
             target:
               entity_id: "{{ area_snapshot.room.state_excluded_lights }}"
-              
-      - wait_template: >
+                
+      - alias: "Wait for any brightness change to begin"
+        continue_on_timeout: true
+        timeout: "{{ scene_transition_time }}"
+        wait_template: >
           {% set active_lights = area_snapshot.room.active_lights %}
           {% set snapshot_brightness = 
             active_lights 
@@ -741,10 +744,7 @@ actions:
           %}
           
           {{ snapshot_brightness != current_brightness }}
-        alias: "Wait for any brightness change to begin"
-        continue_on_timeout: true
-        timeout: "{{ scene_transition_time }}"
-
+     
   - alias: "Group room lights by target brightness"
     variables:
       room_brightness_batches: >
