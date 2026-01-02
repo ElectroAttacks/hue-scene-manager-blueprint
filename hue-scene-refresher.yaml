@@ -741,10 +741,10 @@ actions:
           %}
           
           {{ snapshot_brightness != current_brightness }}
-        alias: "Restore room brightness in optimized batches"alias: "Wait for any brightness change to begin"
+        alias: "Wait for any brightness change to begin"
         continue_on_timeout: true
         timeout: "{{ scene_transition_time }}"
-        
+
   - alias: "Group room lights by target brightness"
     variables:
       room_brightness_batches: >
