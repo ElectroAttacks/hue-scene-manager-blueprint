@@ -165,14 +165,14 @@ mode: restart
 max_exceeded: info
 
 triggers:
-  - alias: Detect any light in target group turning ON
+  - alias: "Hue target turned ON"
     id: state_change
     trigger: light.turned_on
     target: !input targets
     options:
       behavior: any
 
-  - alias: Detect any light in target group turning OFF
+  - alias: "Hue target turned OFF"
     id: state_change
     trigger: light.turned_off
     target: !input targets
@@ -271,38 +271,38 @@ variables:
     }}
     
 conditions:
-  - alias: Pass if triggered by state change or valid Hue light
+  - alias: "Allow execution for valid Hue-origin triggers"
     condition: or
     conditions:
-      - alias: Triggered by Hue state change without being blacklisted
+      - alias: "Primary Hue state trigger (not state-excluded)"
         condition: and
         conditions:
-          - alias: Triggered by Hue state change
+          - alias: "Triggered by Hue ON/OFF state change"
             condition: trigger
             id: state_change
             
-          - alias: Not state check excluded
+          - alias: "Trigger entity is not excluded from state evaluation"
             condition: template
             value_template: "{{ trigger.entity_id not in resolved_targets.state_excluded }}"
             
-      - alias: Triggered externally but resolved to Hue light
+      - alias: "External trigger resolved to Hue light entity"
         condition: and
         conditions:
-          - alias: Not triggered by primary state_change
+          - alias: "Trigger did not originate from Hue state change"
             condition: not
             conditions:
               - condition: trigger
                 id: state_change
 
-          - alias: Trigger entity_id is valid
+          - alias: "Trigger entity_id is present and valid"
             condition: template
             value_template: "{{ trigger.entity_id is string }}"
 
-          - alias: Entity belongs to light domain
+          - alias: "Trigger entity belongs to light domain"
             condition: template
             value_template: "{{ trigger.entity_id.split('.')[0] == 'light' }}"
 
-          - alias: Entity belongs to Philips Hue integration
+          - alias: "Trigger entity belongs to Philips Hue integration"
             condition: template
             value_template: >
               {% set ids = device_attr(trigger.entity_id, 'identifiers') or [] %}
@@ -748,15 +748,35 @@ actions:
   - alias: "Group room lights by target brightness"
     variables:
       room_brightness_batches: >
+        {#
+          Groups room lights by target brightness value to minimize service calls.
+
+          Purpose:
+          - Avoid issuing one light.turn_on call per light
+          - Batch lights that share the same target brightness
+          - Reduce Hue bridge load and visual flicker
+
+          Processing rules:
+          - Only considers lights that were ON at snapshot time
+          - Excludes entities explicitly removed from brightness restoration
+          - Ignores lights without a valid snapshot brightness
+          - Skips lights that are already at the desired brightness
+        #}
+
         {% set ns = namespace(groups={}) %}
+
         {% for light in area_snapshot.room.active_lights
           | rejectattr('entity_id','in', resolved_targets.brightness_excluded)
           | selectattr('brightness','ne', none)
         %}
+          {# Current brightness reported by Home Assistant #}
           {% set current = state_attr(light.entity_id,'brightness') %}
 
+          {# Only include lights that actually require a brightness change #}
           {% if current != light.brightness %}
             {% set key = light.brightness | string %}
+
+            {# Append light entity_id to the appropriate brightness bucket #}
             {% set ns.groups = ns.groups | combine({
               key: (ns.groups[key] if key in ns.groups else []) + [light.entity_id]
             }) %}
@@ -764,6 +784,7 @@ actions:
         {% endfor %}
 
         {{ ns.groups }}
+
 
   - alias: "Restore room brightness in batches"
     repeat:
@@ -777,7 +798,3 @@ actions:
             transition: "{{ brightness_transition_time }}"
           target:
             entity_id: "{{ repeat.item[1] }}"
-
-  - alias: "Stop the automation successfully"
-    stop: "Hue scene refresh complete"
-    error: false
