@@ -643,7 +643,12 @@ actions:
 
       - alias: "Restore brightness for overlapping zones"
         repeat:
-          for_each: "{{ area_snapshot.zones | rejectattr('entity_id','in', resolved_targets.brightness_excluded) | list }}"
+          for_each: >
+            {{ 
+              area_snapshot.zones 
+              | rejectattr('entity_id','in', resolved_targets.brightness_excluded) 
+              | list 
+            }}
           sequence:
             - alias: "Restore zone brightness if changed"
               condition: template
@@ -668,7 +673,12 @@ actions:
     else:
       - alias: "Activate scenes for fully-on zones only"
         repeat:
-          for_each: "{{ area_snapshot.zones | rejectattr('last_scene','eq', none) | list }}"
+          for_each: >
+            {{ 
+              area_snapshot.zones 
+              | rejectattr('last_scene','eq', none) 
+              | list 
+            }}
           sequence:
             - alias: "Build Hue scene payload for zone activation"
               variables:
@@ -684,7 +694,7 @@ actions:
                     'transition': scene_transition_time
                   } %}
 
-                  {% if repeat.item.entity_id not in resolved_targets.brightness_excluded %}
+                  {% if repeat.item.entity_id not in resolved_targets.brightness_excluded and repeat.item.brightness is not none %}
                     {% set data = data | combine({
                       'brightness': repeat.item.brightness
                     }) %}
@@ -719,6 +729,7 @@ actions:
           {% set active_lights = area_snapshot.room.active_lights %}
           {% set snapshot_brightness = 
             active_lights 
+            | rejectattr('brightness','eq', none)
             | map(attribute='brightness') 
             | sum 
           %}
@@ -727,25 +738,42 @@ actions:
             active_lights 
             | map(attribute='entity_id') 
             | expand
+            | rejectattr('attributes.brightness','eq', none)
             | map(attribute='attributes.brightness') 
             | sum
           %}
           
           {{ snapshot_brightness != current_brightness }}
-    
-  - alias: "Restore per-light brightness in room"
-    repeat:
-      for_each: "{{ area_snapshot.room.active_lights | rejectattr('entity_id','in', resolved_targets.brightness_excluded) | list }}"
-      sequence:
-        - alias: "Restore light brightness if changed"
-          condition: template
-          value_template: "{{ state_attr(repeat.item.entity_id,'brightness') != repeat.item.brightness }}"
+     
+  - alias: "Group room lights by target brightness"
+    variables:
+      room_brightness_batches: >
+        {% set ns = namespace(groups={}) %}
+        {% for light in area_snapshot.room.active_lights
+          | rejectattr('entity_id','in', resolved_targets.brightness_excluded)
+          | selectattr('brightness','ne', none)
+        %}
+          {% set current = state_attr(light.entity_id,'brightness') %}
 
-        - alias: "Apply brightness to individual light"
+          {% if current != light.brightness %}
+            {% set key = light.brightness | string %}
+            {% set ns.groups = ns.groups | combine({
+              key: (ns.groups[key] if key in ns.groups else []) + [light.entity_id]
+            }) %}
+          {% endif %}
+        {% endfor %}
+
+        {{ ns.groups }}
+
+  - alias: "Restore room brightness in batches"
+    repeat:
+      for_each: "{{ room_brightness_batches }}"
+      sequence:
+        - alias: "Apply batched brightness"
           action: light.turn_on
           continue_on_error: true
           data:
-            brightness: "{{ repeat.item.brightness }}"
+            brightness: "{{ repeat.item.key | int }}"
             transition: "{{ brightness_transition_time }}"
           target:
-            entity_id: "{{ repeat.item.entity_id }}"
+            entity_id: "{{ repeat.item.value }}"
