@@ -712,12 +712,26 @@ actions:
             target:
               entity_id: "{{ area_snapshot.room.state_excluded_lights }}"
                 
-      - alias: "Wait for zone brightness change to begin"
+      - alias: "Wait for any brightness change to begin"
         continue_on_timeout: true
         timeout: "{{ scene_transition_time }}"
         wait_template: >
-          {% set light_snapshot = area_snapshot.zones | last or area_snapshot.room %}
-          {{ not is_state_attr(light_snapshot.entity_id, 'brightness', light_snapshot.brightness) }}
+          {% set active_lights = area_snapshot.room.active_lights %}
+          {% set snapshot_brightness = 
+            active_lights 
+            | map(attribute='brightness') 
+            | sum 
+          %}
+
+          {% set current_brightness = 
+            active_lights 
+            | map(attribute='entity_id') 
+            | expand
+            | map(attribute='attributes.brightness') 
+            | sum
+          %}
+          
+          {{ snapshot_brightness != current_brightness }}
     
   - alias: "Restore per-light brightness in room"
     repeat:
