@@ -588,6 +588,10 @@ actions:
         condition: template
         value_template: "{{ area_snapshot.room.is_area_on }}"
     then:
+      - alias: "Ensure a scene was found"
+        condition: template
+        value_template: "{{ area_snapshot.room.last_scene is not none }}"
+
       - alias: "Build Hue scene payload for room activation"
         variables:
           scene_data: >
@@ -629,9 +633,13 @@ actions:
               transition: "{{ brightness_transition_time }}" 
             target:
               entity_id: "{{ area_snapshot.room.state_excluded_lights }}"
-                                     
-      - alias: "Wait for room scene transition to settle"
-        delay: "{{ [scene_transition_time / 4, 0.25] | max }}"
+
+      - alias: "Wait for room brightness change to begin"
+        continue_on_timeout: true
+        timeout: "{{ scene_transition_time }}"
+        wait_template: >
+          {% set light_snapshot = area_snapshot.room %}
+          {{ not is_state_attr(light_snapshot.entity_id, 'brightness', light_snapshot.brightness) }}
 
       - alias: "Restore brightness for overlapping zones"
         repeat:
@@ -650,13 +658,17 @@ actions:
               target:
                 entity_id: "{{ repeat.item.entity_id }}"
 
-      - alias: "Wait after zone brightness restoration"
-        delay: "{{ [brightness_transition_time / 4, 0.25] | max }}"
+      - alias: "Wait for zone brightness change to begin"
+        continue_on_timeout: true
+        timeout: "{{ brightness_transition_time }}"
+        wait_template: >
+          {% set light_snapshot = area_snapshot.zones | last or area_snapshot.room %}
+          {{ not is_state_attr(light_snapshot.entity_id, 'brightness', light_snapshot.brightness) }}
 
     else:
       - alias: "Activate scenes for fully-on zones only"
         repeat:
-          for_each: "{{ area_snapshot.zones }}"
+          for_each: "{{ area_snapshot.zones | rejectattr('last_scene','eq', none) | list }}"
           sequence:
             - alias: "Build Hue scene payload for zone activation"
               variables:
@@ -700,8 +712,12 @@ actions:
             target:
               entity_id: "{{ area_snapshot.room.state_excluded_lights }}"
                 
-      - alias: "Wait for zone scene transitions to settle"
-        delay: "{{ [scene_transition_time / 4, 0.25] | max }}"
+      - alias: "Wait for zone brightness change to begin"
+        continue_on_timeout: true
+        timeout: "{{ scene_transition_time }}"
+        wait_template: >
+          {% set light_snapshot = area_snapshot.zones | last or area_snapshot.room %}
+          {{ not is_state_attr(light_snapshot.entity_id, 'brightness', light_snapshot.brightness) }}
     
   - alias: "Restore per-light brightness in room"
     repeat:
