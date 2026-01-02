@@ -767,13 +767,13 @@ actions:
 
   - alias: "Restore room brightness in batches"
     repeat:
-      for_each: "{{ room_brightness_batches }}"
+      for_each: "{{ room_brightness_batches.items() | list }}"
       sequence:
         - alias: "Apply batched brightness"
           action: light.turn_on
           continue_on_error: true
           data:
-            brightness: "{{ repeat.item.key | int }}"
+            brightness: "{{ repeat.item[0] | int }}"
             transition: "{{ brightness_transition_time }}"
           target:
-            entity_id: "{{ repeat.item.value }}"
+            entity_id: "{{ repeat.item[1] }}"
