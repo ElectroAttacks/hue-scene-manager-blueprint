@@ -465,7 +465,7 @@ actions:
           #}
           {% set lights = members
             | rejectattr('entity_id','in', resolved_targets.state_excluded)
-            | selectattr('state','ne','unknown')
+            | rejectattr('state', 'in', ['unavailable', 'unknown'])
             | list
           %}
 
@@ -488,7 +488,7 @@ actions:
           {% set effects_clear =
             allow_active_effects or
             (effect_capable
-              | selectattr('attributes.effect','in',[ none, off, 'none', 'off'])
+              | selectattr('attributes.effect','in',[none, off, 'none', 'off'])
               | list | count == effect_capable | count)
           %}
 
@@ -769,11 +769,8 @@ actions:
           | rejectattr('entity_id','in', resolved_targets.brightness_excluded)
           | selectattr('brightness','ne', none)
         %}
-          {# Current brightness reported by Home Assistant #}
-          {% set current = state_attr(light.entity_id,'brightness') %}
-
           {# Only include lights that actually require a brightness change #}
-          {% if current != light.brightness %}
+          {% if not is_state_attr(light.entity_id, 'brightness', light.brightness) %}
             {% set key = light.brightness | string %}
 
             {# Append light entity_id to the appropriate brightness bucket #}
