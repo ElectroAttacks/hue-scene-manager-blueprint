@@ -755,6 +755,10 @@ actions:
               - alias: "Check if excluded lights should be forced off"
                 condition: template
                 value_template: "{{ turn_off_state_excluded_lights }}" 
+              
+              - alias: "Check if any excluded lights need to be turned off"
+                condition: template
+                value_template: "{{ area_snapshot.room.state_excluded_lights | count > 0 }}"
 
             then:
               - alias: "Turn off excluded lights in room"
