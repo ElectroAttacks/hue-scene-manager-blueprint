@@ -539,7 +539,7 @@ actions:
           {% set last_scene =
             expand(device_entities(device_id(group)))
             | selectattr('domain', 'eq', 'scene')
-            | selectattr('state','ne','unknown')
+            | rejectattr('state','in', ['unavailable', 'unknown'])
             | sort(attribute='state', reverse=true)
             | map(attribute='entity_id')
             | list
@@ -690,20 +690,6 @@ actions:
             target:
               entity_id: "{{ area_snapshot.room.last_scene }}"
           
-          - alias: "Optionally turn off state-excluded lights (room)"
-            if:
-              - alias: "Check if excluded lights should be forced off"
-                condition: template
-                value_template: "{{ turn_off_state_excluded_lights }}"
-
-            then:
-              - alias: "Turn off excluded lights in room"
-                action: light.turn_off
-                data:
-                  transition: "{{ brightness_transition_time }}" 
-                target:
-                  entity_id: "{{ area_snapshot.room.state_excluded_lights }}"
-
           - alias: "Restore brightness for overlapping zones"
             repeat:
               for_each: >
@@ -767,19 +753,19 @@ actions:
                   target:
                     entity_id: "{{ repeat.item.last_scene }}"
           
-          - alias: "Optionally turn off state-excluded lights (room)"
-            if:
-              - alias: "Check if excluded lights should be forced off"
-                condition: template
-                value_template: "{{ turn_off_state_excluded_lights }}" 
+      - alias: "Optionally turn off state-excluded lights (room)"
+        if:
+          - alias: "Check if excluded lights should be forced off"
+            condition: template
+            value_template: "{{ turn_off_state_excluded_lights }}" 
 
-            then:
-              - alias: "Turn off excluded lights in room"
-                action: light.turn_off
-                data:
-                  transition: "{{ brightness_transition_time }}"
-                target:
-                  entity_id: "{{ area_snapshot.room.state_excluded_lights }}"
+        then:
+          - alias: "Turn off excluded lights in room"
+            action: light.turn_off
+            data:
+              transition: "{{ brightness_transition_time }}"
+            target:
+              entity_id: "{{ area_snapshot.room.state_excluded_lights }}"
                     
       - alias: "Restore room brightness in batches"
         repeat:
