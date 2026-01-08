@@ -1,0 +1,25 @@
+{
+  "name": "hue-scene-refresher-blueprint",
+  "version": "0.0.0-development",
+  "description": "Intelligently refreshes Philips Hue scenes when lights change state",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ElectroAttacks/hue-scene-manager-blueprint.git"
+  },
+  "author": "Electro_Attacks",
+  "license": "MIT",
+  "private": true,
+  "devDependencies": {
+    "@commitlint/cli": "^19.0.0",
+    "@commitlint/config-conventional": "^19.0.0",
+    "@semantic-release/changelog": "^6.0.3",
+    "@semantic-release/exec": "^6.0.3",
+    "@semantic-release/git": "^10.0.1",
+    "semantic-release": "^23.0.0"
+  },
+  "release": {
+    "branches": [
+      "main"
+    ]
+  }
+}
