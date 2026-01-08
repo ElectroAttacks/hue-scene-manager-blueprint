@@ -228,6 +228,7 @@ triggers:
   - triggers: !input alternative_triggers
 
 variables:
+  state_trigger_delay: !input state_trigger_delay
   brightness_transition_time: !input transition_time
   scene_transition_time: !input scene_transition_time
   dynamic_scene_speed: !input dynamic_scene_speed
@@ -237,10 +238,43 @@ variables:
   turn_off_state_excluded_lights: !input turn_off_state_excluded_lights
   brightness_restore_exclusions: !input targets_excluded_from_brightness_restore
   resolved_targets: >
-    {#
-      Converts Home Assistant target selectors (entity / device / area / label)
-      into flat, unique lists of light entities.
-    #}
+    {# ===================================================================
+      Target Resolution Macro
+      
+      Converts Home Assistant target selectors into flat, unique lists of
+      light entities by recursively resolving all hierarchical references.
+      
+      Purpose:
+        User configurations can specify targets using various selectors:
+        - Direct entity IDs (light.bedroom_1)
+        - Devices (all entities on a device)
+        - Areas (all entities in a room/area)
+        - Floors (all entities on a building floor)
+        - Labels/tags (all entities with a specific label)
+        
+        This macro resolves ALL of these into a single deduplicated list
+        of actual light entity IDs for efficient processing.
+      
+      Input (source):
+        A Home Assistant target selector object that may contain:
+        - entity_id: Single entity or list of entities
+        - device_id: Single device or list of devices
+        - area_id: Single area or list of areas  
+        - floor_id: Single floor or list of floors
+        - label_id: Single label or list of labels
+      
+      Output:
+        Flat list of unique light entity_ids (e.g., ['light.bedroom_1', ...])
+        Only entities in the 'light' domain are included.
+      
+      Processing Flow:
+        1. Extract direct entity references
+        2. Expand hierarchical targets (floors → areas → entities)
+        3. Expand devices to their entities
+        4. Process labels (which can tag entities, devices, or areas)
+        5. Merge all sources, filter to light domain only
+        6. Deduplicate and return as list
+    =================================================================== #}
 
     {%- macro resolve_targets(source, returns) -%}
 
@@ -358,92 +392,57 @@ actions:
   - alias: "Initialize state change tracking"
     variables:
       trigger_events: >
-        {# ===================================================================
-          Capture initial trigger event
-          
-          Creates the first entry in the state change tracking list with
-          entity_id, from_state, and to_state for the triggering entity
-        =================================================================== #}
-        {{ [{
-          'entity_id': trigger.entity_id,
-          'from_state': trigger.from_state.state if trigger.from_state is not none else none,
-          'to_state': trigger.to_state.state if trigger.to_state is not none else none
-        }] }}
+        {{ {
+          trigger.entity_id: {
+            'from_state': trigger.from_state.state if trigger.from_state is not none else 'unknown',
+            'to_state': trigger.to_state.state if trigger.to_state is not none else 'unknown'
+          }
+        } }}
 
-  - alias: "Collect subsequent state changes within delay window"
+  - alias: "Collect subsequent state changes via polling"
     repeat:
       until:
-        - alias: "No additional changes detected"
+        - alias: "" 
           condition: template
-          value_template: "{{ not wait.completed }}"
+          value_template: "{{ previous_event_count >= trigger_events | count }}"
 
       sequence:
-        - alias: "Wait for additional state changes"
-          continue_on_timeout: true
-          timeout: !input state_trigger_delay
-          wait_for_trigger:
-            - alias: "Primary target turned ON"
-              trigger: light.turned_on
-              target: !input targets
-              options:
-                behavior: any
-
-            - alias: "Primary target turned OFF"
-              trigger: light.turned_off
-              target: !input targets
-              options:
-                behavior: any
-
-            - triggers: !input alternative_triggers
-
-        - alias: "Verify a trigger was detected"
-          condition: template
-          value_template: "{{ wait.completed }}"
-
-        - alias: "Verify trigger entity is not state-excluded"
-          condition: template
-          value_template: "{{ trigger.entity_id not in resolved_targets.state_excluded }}"
-
-        - alias: "Merge additional trigger into state change tracking"
+        - alias: "Store event count before polling"
           variables:
-            trigger_events: >
-              {# ===================================================================
-                Update or append trigger event to tracking list
-                
-                If entity already has a tracked event, update its to_state
-                Otherwise, append as a new event entry
-              =================================================================== #}
-              {% set existing_ids = trigger_events | map(attribute='entity_id') | list %}
+            previous_event_count: "{{ trigger_events | count }}"
 
-              {% if wait.trigger.entity_id in existing_ids %}
-                {# ---------------------------------------------------------------
-                  Entity already tracked: Update the to_state
-                --------------------------------------------------------------- #}
-                {% set updated = namespace(items=[]) %}
-                {% for item in trigger_events %}
-                  {% if item.entity_id == wait.trigger.entity_id %}
-                    {# Update this entity's to_state with the new state #}
-                    {% set updated.items = updated.items + [item | combine({
-                      'to_state': wait.trigger.to_state.state if wait.trigger.to_state is not none else none
-                    })] %}
-                  {% else %}
-                    {# Keep other entities unchanged #}
-                    {% set updated.items = updated.items + [item] %}
-                  {% endif %}
-                {% endfor %}
-                {{ updated.items }}
+        - alias: "Delay before next poll"
+          delay:
+            seconds: "{{ state_trigger_delay }}"
 
-              {% else %}
-                {# ---------------------------------------------------------------
-                  New entity: Append to tracking list
-                --------------------------------------------------------------- #}
-                {{ trigger_events + [{
-                  'entity_id': wait.trigger.entity_id,
-                  'from_state': wait.trigger.from_state.state if wait.trigger.from_state is not none else none,
-                  'to_state': wait.trigger.to_state.state if wait.trigger.to_state is not none else none
-                }] }}
-              {% endif %}
- 
+        - alias: "Poll for recently changed Hue lights"
+          variables:
+            trigger_events: |
+              {% set recently_changed_lights =
+                integration_entities('hue')
+                | select('match', '^light\.')
+                | expand
+                | rejectattr('state', 'in', ['unknown', 'unavailable'])
+                | selectattr('last_changed', '>=', utcnow() - timedelta(seconds=state_trigger_delay))
+                | list
+              %}
+
+              {% set events = namespace(data=trigger_events) %}
+              {% for light in recently_changed_lights %}
+                {% set events.data = events.data | combine({
+                  light.entity_id: {
+                    'from_state': 'on' if light.state == 'off' else 'off',
+                    'to_state': light.state
+                  }
+                }) %}
+              {% endfor %}
+
+              {{ events.data }}
+  
+  - alias: ""
+    variables:
+      previous_event_count: null
+
   - alias: "Capture Hue state snapshot"
     variables:
       hue_snapshot: >
@@ -453,7 +452,7 @@ actions:
           Creates a flat list of entity_ids that were part of state changes
           Used by build_base_entry macro to mark entities as changed
         =================================================================== #}
-        {% set trigger_event_ids = trigger_events | map(attribute='entity_id') | list %}
+        {% set trigger_event_ids = trigger_events.keys() | list %}
 
         {# ===================================================================
           Macro: Build base entry for any Hue entity
@@ -465,7 +464,6 @@ actions:
         =================================================================== #}
         {% macro build_base_entry(entity_state, returns) %}
           {% set base_entry = {
-            'entity_id': entity_state.entity_id,
             'state': entity_state.state,
             'has_changed': entity_state.entity_id in trigger_event_ids,
             'state_excluded': entity_state.entity_id in resolved_targets.state_excluded
@@ -495,9 +493,8 @@ actions:
           separates into scenes, groups (rooms/zones), and individual lights
         =================================================================== #}
         {% set all_hue_entities = 
-          integration_entities('hue')
+          all_hue_entities
           | expand 
-          | rejectattr('domain', 'in', ['binary_sensor', 'switch', 'sensor', 'event'])
           | rejectattr('state', 'in', ['unavailable', 'unknown'])
           | sort(attribute='state', reverse=true)
           | list
@@ -533,10 +530,16 @@ actions:
           Iterates through each group (room/zone) and captures:
           - Group state and brightness
           - Last activated scene (if group is ON)
-          - Individual light states and brightness
+          - Individual light states and brightness (as dict)
           - Zone-to-room mappings with coverage percentage
+          
+          Structure:
+            snapshot.rooms = {room_id: {state, lights: {light_id: data}, zones: {zone_id: data}}}
+            snapshot.zones = {zone_id: {state, lights: {light_id: data}, coverage}}
+          
+          Uses dictionaries throughout for O(1) lookups and efficient merging
         =================================================================== #}
-        {% set snapshot = namespace(rooms=[], zones=[], zones_in_rooms=[]) %}
+        {% set snapshot = namespace(rooms={}, zones={}, zones_in_rooms={}) %}
         {% set build_base_entry = build_base_entry | as_function %}
 
         {% for group in hue_groups %}
@@ -569,15 +572,22 @@ actions:
               }) %}
             {% endif %}
           {% endif %}
-        
+
           {# ---------------------------------------------------------------
             Build light list with individual light states
           --------------------------------------------------------------- #}
-          {% set group_lights = namespace(items=[]) %}
-          {% for light in hue_lights if light.entity_id in group.attributes['entity_id'] %}
-            {% set group_lights.items = group_lights.items + [build_base_entry(light)] %}
-          {% endfor %}
+          
+          {% set group_lights = namespace(items = { }) %}  
 
+          {% for light in hue_lights 
+            | selectattr('entity_id', 'in', group.attributes['entity_id'])
+            | list
+          %}
+            {% set group_lights.items = group_lights.items | combine({
+              light.entity_id: build_base_entry(light)
+            }) %}
+          {% endfor %}
+          
           {# ---------------------------------------------------------------
             Calculate effective group state
             
@@ -587,7 +597,7 @@ actions:
             - PARTIAL_ON: Some lights are ON, some OFF, or effects active
           --------------------------------------------------------------- #}
           {% set evaluated_lights = 
-            group_lights.items
+            group_lights.items.values()
             | selectattr('state_excluded', 'eq', false)
             | list
           %}
@@ -604,7 +614,7 @@ actions:
           {% set group_entry = group_entry | combine({
             'state': 'on' if group_fully_active else 'off' if group_fully_off else 'partial_on',
             'has_changed': 
-              group_lights.items 
+              group_lights.items
               | selectattr('has_changed', 'eq', true)
               | list 
               | count > 0 
@@ -616,28 +626,27 @@ actions:
           --------------------------------------------------------------- #}
           {% if group.attributes['hue_type'] == 'room' %}
             {# For rooms: find overlapping zones and calculate coverage #}
-            {% set overlapping_zones = namespace(items=[]) %}
+            {% set overlapping_zones = namespace(items={}) %}
 
-            {% for zone in snapshot.zones %}
+            {% for zone_id, zone in snapshot.zones.items() %}
               {# Count how many zone lights are in this room #}
               {% set overlap_count = 
-                zone.lights 
-                | map(attribute='entity_id')
-                | select('in', group_lights.items | map(attribute='entity_id'))
+                zone.lights.keys()
+                | select('in', group_lights.items.keys())
                 | list
                 | count
               %}
               
               {% if overlap_count > 0 %}
                 {# Mark this zone as assigned to avoid duplication in output #}
-                {% set snapshot.zones_in_rooms = snapshot.zones_in_rooms + [zone] %}
+                {% set snapshot.zones_in_rooms = snapshot.zones_in_rooms | combine({zone_id: true}) %}
                 
                 {# Calculate coverage percentage (zone lights / room lights) #}
                 {% set zone = zone | combine({
                   'coverage': (overlap_count / group_lights.items | count * 100) | round(2)
                 }) %}
 
-                {% set overlapping_zones.items = overlapping_zones.items + [zone] %}
+                {% set overlapping_zones.items = overlapping_zones.items | combine({zone_id: zone}) %}
               {% endif %}
             {% endfor %}
 
@@ -647,7 +656,9 @@ actions:
               'lights': group_lights.items
             }) %}
           
-            {% set snapshot.rooms = snapshot.rooms + [group_entry] %}
+            {% set snapshot.rooms = snapshot.rooms | combine({
+              group.entity_id: group_entry
+            }) %}
 
           {% elif group.attributes['hue_type'] == 'zone' %}
             {# For zones: initialize with 0% coverage (updated when assigned to room) #}
@@ -656,7 +667,9 @@ actions:
               'lights': group_lights.items
             }) %}
           
-            {% set snapshot.zones = snapshot.zones + [group_entry] %}
+            {% set snapshot.zones = snapshot.zones | combine({
+              group.entity_id: group_entry
+            }) %}
           {% endif %}
         {% endfor %}
 
@@ -665,12 +678,17 @@ actions:
           
           Returns only unassigned zones (those not mapped to any room)
           alongside all rooms with their embedded zone references
-        =================================================================== #}
+        =================================================================== #} 
+        {% set standalone_zones = namespace(data={}) %}
+        {% for zone_id, zone in snapshot.zones.items() if zone_id not in snapshot.zones_in_rooms %}
+          {% set standalone_zones.data = standalone_zones.data | combine({
+            zone_id: zone
+          }) %}
+        {% endfor %}
+
         {{ {
           'rooms': snapshot.rooms,
-          'zones': snapshot.zones 
-            | reject('in', snapshot.zones_in_rooms) 
-            | list
+          'zones': standalone_zones.data
         } }}
 
   - alias: "Determine affected groups requiring scene refresh"
@@ -684,14 +702,19 @@ actions:
           - Room PARTIAL_ON → PARTIAL_ON: Refresh only zones that changed
           - Room → OFF or ON: Refresh the room itself
           
+          Structure:
+            affected.rooms = {room_id: room_data} - Rooms requiring direct refresh
+            affected.zones = {zone_id: zone_data} - Zones requiring refresh
+          
           Note: Partial_on state means mixed light states (some on, some off)
+          All operations use dictionary combine for efficient deduplication
         =================================================================== #}
-        {% set affected = namespace(rooms=[], zones=[]) %}
+        {% set affected = namespace(rooms={}, zones={}) %}
 
         {# ===================================================================
           Process rooms with state changes
         =================================================================== #}
-        {% for room in hue_snapshot.rooms if room.has_changed %}
+        {% for room_id, room in hue_snapshot.rooms.items() if room.has_changed %}
           
           {# ---------------------------------------------------------------
             Determine if room transitioned from ON to PARTIAL_ON
@@ -703,7 +726,7 @@ actions:
             
             If reversing changes results in all lights ON, then ON → PARTIAL_ON
           --------------------------------------------------------------- #}
-          {% set evaluated_lights = room.lights | selectattr('state_excluded', 'eq', false) | list %}
+          {% set evaluated_lights = room.lights.values() | selectattr('state_excluded', 'eq', false) | list %}
           {% set changed_lights = evaluated_lights | selectattr('has_changed', 'eq', true) | list %}
           
           {# Count lights that would have been ON before the change #}
@@ -731,20 +754,20 @@ actions:
             
             {% if room_was_on %}
               {# ON → PARTIAL_ON: Refresh all zones #}
-              {% for zone in room.zones %}
-                {% set affected.zones = affected.zones + [zone] %}
+              {% for zone_id, zone in room.zones.items() %}
+                {% set affected.zones = affected.zones | combine({zone_id: zone}) %}
               {% endfor %}
               
             {% else %}
               {# PARTIAL_ON → PARTIAL_ON: Refresh only changed zones #}
-              {% for zone in room.zones if zone.has_changed %}
-                {% set affected.zones = affected.zones + [zone] %}
+              {% for zone_id, zone in room.zones.items() if zone.has_changed %}
+                {% set affected.zones = affected.zones | combine({zone_id: zone}) %}
               {% endfor %}
             {% endif %}
             
           {% else %}
             {# Room is ON or OFF: Refresh the room itself #}
-            {% set affected.rooms = affected.rooms + [room] %}
+            {% set affected.rooms = affected.rooms | combine({room_id: room}) %}
           {% endif %}
 
         {% endfor %}
@@ -754,8 +777,8 @@ actions:
           
           Only zones not mapped to any room are processed here
         =================================================================== #}
-        {% for zone in hue_snapshot.zones if zone.has_changed %}
-          {% set affected.zones = affected.zones + [zone] %}
+        {% for zone_id, zone in hue_snapshot.zones.items() if zone.has_changed %}
+          {% set affected.zones = affected.zones | combine({zone_id: zone}) %}
         {% endfor %}
 
         {# ===================================================================
@@ -770,7 +793,7 @@ actions:
     repeat:
       for_each: >
         {# Combine rooms and zones into single list for processing #}
-        {{ affected.rooms + affected.zones }}
+        {{ affected.rooms.values() | list + affected.zones.values() | list }}
       
       sequence:
         - alias: "Route processing based on group state"
@@ -844,7 +867,7 @@ actions:
 
                     - alias: "Group contains state-excluded lights"
                       condition: template
-                      value_template: "{{ repeat.item.lights | selectattr('state_excluded', 'eq', true) | list | count > 0 }}"
+                      value_template: "{{ repeat.item.lights.values() | selectattr('state_excluded', 'eq', true) | list | count > 0 }}"
                 
                     sequence:
                       - alias: "Turn off state-excluded lights"
@@ -854,7 +877,7 @@ actions:
                         target:
                           entity_id: >
                             {{ 
-                              repeat.item.lights 
+                              repeat.item.lights.values()
                               | selectattr('state_excluded', 'eq', true) 
                               | map(attribute='entity_id') 
                               | list 
@@ -873,7 +896,7 @@ actions:
                     =================================================================== #}
                     {% set ns = namespace(groups={}) %}
 
-                    {% for light in repeat.item.lights
+                    {% for light in repeat.item.lights.values()
                       | rejectattr('state','ne','on')
                       | rejectattr('entity_id','in', resolved_targets.brightness_excluded)
                       | selectattr('brightness','gt', 0)
