@@ -1,10 +1,29 @@
 blueprint:
-  name: Hue Scene Refresher
+  name: Hue Scene Refresher(v2.0)
+  version: 2.0.0
   domain: automation
   author: Electro_Attacks
   description: >
-    Refreshes the last active Philips Hue scene for the affected room and any overlapping zones when a Hue light, room, or zone changes state.
-    The automation safely evaluates the current area state, restores brightness where appropriate, supports dynamic scenes, respects active effects, and allows fine-grained exclusions and alternative trigger sources.
+    Intelligently refreshes Philips Hue scenes when lights change state, using advanced state transition detection to minimize unnecessary updates.
+
+
+    **Core Features:**
+
+    • **Three-State System**: Groups are evaluated as ON (all lights on, no effects), OFF (all lights off), or PARTIAL_ON (mixed states)
+
+    • **Smart Refresh Logic**: State transition awareness determines refresh targets - ON → PARTIAL_ON refreshes all zones, PARTIAL_ON → PARTIAL_ON refreshes only changed zones, direct ON/OFF transitions refresh the room itself
+
+    • **Batch Optimization**: Brightness restoration groups lights by target brightness level, reducing Hue bridge API calls and improving performance
+
+    • **Dynamic Scene Support**: Configurable playback speed for animated Hue scenes with automatic settle delays
+
+    • **Zone Coverage Mapping**: Automatically detects and refreshes overlapping zones within rooms based on light membership
+
+    • **Effect Detection**: Optionally respects or ignores active light effects (colorloop, etc.) when determining group state
+
+    • **Fine-Grained Control**: Exclude specific lights from state evaluation or brightness restoration while still allowing scene participation
+
+    • **Post-Action Hooks**: Execute custom actions when rooms go OFF or after successful scene refresh completion
   homeassistant:
     min_version: 2025.12.4
 
@@ -186,7 +205,7 @@ blueprint:
           selector:
             action:
 
-mode: restart
+mode: single
 max_exceeded: info
 
 triggers:
@@ -334,458 +353,573 @@ conditions:
               {{ ids | selectattr(0, 'eq', 'hue') | list | count > 0 }}
  
 actions:
-  - alias: "Wait for state trigger debounce"
-    delay: !input state_trigger_delay
-    
-  - alias: "Resolve Hue room and overlapping zones from trigger"
+  - alias: "Initialize state change tracking"
     variables:
-      area_context: >
-        {#
-          Resolves the Hue room context for the current trigger and
-          determines all Hue zones that overlap with that room.
+      trigger_events: >
+        {# ===================================================================
+          Capture initial trigger event
+          
+          Creates the first entry in the state change tracking list with
+          entity_id, from_state, and to_state for the triggering entity
+        =================================================================== #}
+        {{ [{
+          'entity_id': trigger.entity_id,
+          'from_state': trigger.from_state.state if trigger.from_state is not none else none,
+          'to_state': trigger.to_state.state if trigger.to_state is not none else none
+        }] }}
 
-          Resolution rules:
-          - If the trigger is a Hue room → use it directly
-          - If the trigger is a Hue zone → resolve the parent room via a shared light
-          - If the trigger is a single Hue light → resolve the containing room
-          - If no room can be resolved, the automation will abort later
-        #}
+  - alias: "Collect subsequent state changes within delay window"
+    repeat:
+      until:
+        - alias: "No additional changes detected"
+          condition: template
+          value_template: "{{ not wait.completed }}"
 
-        {#
-          Collect all Hue groups (rooms and zones).
-          These are represented as light entities with the `is_hue_group` attribute.
-        #}
-        {% set hue_groups =
-          states.light
-          | selectattr('attributes.is_hue_group','eq',true)
-          | rejectattr('state','in', ['unavailable', 'unknown'])
+      sequence:
+        - alias: "Wait for additional state changes"
+          continue_on_timeout: true
+          timeout: !input state_trigger_delay
+          wait_for_trigger:
+            - alias: "Primary target turned ON"
+              trigger: light.turned_on
+              target: !input targets
+              options:
+                behavior: any
+
+            - alias: "Primary target turned OFF"
+              trigger: light.turned_off
+              target: !input targets
+              options:
+                behavior: any
+
+            - triggers: !input alternative_triggers
+
+        - alias: "Verify a trigger was detected"
+          condition: template
+          value_template: "{{ wait.completed }}"
+
+        - alias: "Verify trigger entity is not state-excluded"
+          condition: template
+          value_template: "{{ trigger.entity_id not in resolved_targets.state_excluded }}"
+
+        - alias: "Merge additional trigger into state change tracking"
+          variables:
+            trigger_events: >
+              {# ===================================================================
+                Update or append trigger event to tracking list
+                
+                If entity already has a tracked event, update its to_state
+                Otherwise, append as a new event entry
+              =================================================================== #}
+              {% set existing_ids = trigger_events | map(attribute='entity_id') | list %}
+
+              {% if wait.trigger.entity_id in existing_ids %}
+                {# ---------------------------------------------------------------
+                  Entity already tracked: Update the to_state
+                --------------------------------------------------------------- #}
+                {% set updated = namespace(items=[]) %}
+                {% for item in trigger_events %}
+                  {% if item.entity_id == wait.trigger.entity_id %}
+                    {# Update this entity's to_state with the new state #}
+                    {% set updated.items = updated.items + [item | combine({
+                      'to_state': wait.trigger.to_state.state if wait.trigger.to_state is not none else none
+                    })] %}
+                  {% else %}
+                    {# Keep other entities unchanged #}
+                    {% set updated.items = updated.items + [item] %}
+                  {% endif %}
+                {% endfor %}
+                {{ updated.items }}
+
+              {% else %}
+                {# ---------------------------------------------------------------
+                  New entity: Append to tracking list
+                --------------------------------------------------------------- #}
+                {{ trigger_events + [{
+                  'entity_id': wait.trigger.entity_id,
+                  'from_state': wait.trigger.from_state.state if wait.trigger.from_state is not none else none,
+                  'to_state': wait.trigger.to_state.state if wait.trigger.to_state is not none else none
+                }] }}
+              {% endif %}
+ 
+  - alias: "Capture Hue state snapshot"
+    variables:
+      hue_snapshot: >
+        {# ===================================================================
+          Extract entity IDs from trigger events for efficient lookups
+          
+          Creates a flat list of entity_ids that were part of state changes
+          Used by build_base_entry macro to mark entities as changed
+        =================================================================== #}
+        {% set trigger_event_ids = trigger_events | map(attribute='entity_id') | list %}
+
+        {# ===================================================================
+          Macro: Build base entry for any Hue entity
+          
+          Creates a standardized entry structure for rooms, zones, or lights
+          with common properties like state, brightness, and change tracking.
+          
+          For lights (non-groups), also includes effect detection.
+        =================================================================== #}
+        {% macro build_base_entry(entity_state, returns) %}
+          {% set base_entry = {
+            'entity_id': entity_state.entity_id,
+            'state': entity_state.state,
+            'has_changed': entity_state.entity_id in trigger_event_ids,
+            'state_excluded': entity_state.entity_id in resolved_targets.state_excluded
+          } %}
+
+          {# Add brightness data for entities that are ON #}
+          {% if entity_state.state == 'on' %}
+            {% set base_entry = base_entry | combine({
+              'brightness': int(entity_state.attributes['brightness'], 0)
+            }) %}
+
+            {# Only individual lights (not groups) have effect attributes #}
+            {% if entity_state.attributes['hue_type'] is not defined %}
+              {% set base_entry = base_entry | combine({
+                'has_effect': entity_state.attributes['effect'] not in [null, none, 'off'] and not allow_active_effects,
+              }) %}
+            {% endif %}
+          {% endif %}
+
+          {% do returns(base_entry) %}
+        {% endmacro %}
+
+        {# ===================================================================
+          Step 1: Collect and categorize all Hue entities
+          
+          Filters out non-light domains and unavailable entities, then
+          separates into scenes, groups (rooms/zones), and individual lights
+        =================================================================== #}
+        {% set all_hue_entities = 
+          integration_entities('hue')
+          | expand 
+          | rejectattr('domain', 'in', ['binary_sensor', 'switch', 'sensor', 'event'])
+          | rejectattr('state', 'in', ['unavailable', 'unknown'])
+          | sort(attribute='state', reverse=true)
           | list
         %}
 
-        {# Placeholder for the resolved Hue room entity #}
-        {% set room_entity = none %}
+        {# Separate scenes for last-activated scene detection #}
+        {% set hue_scenes = 
+          all_hue_entities
+          | selectattr('domain', 'eq', 'scene')
+          | list
+        %}
 
-        {# 
-          Case 1: Trigger entity is already a Hue group (room or zone) 
-        #}
-        {% if is_state_attr(trigger.entity_id, 'is_hue_group', true) %}
+        {# Groups include both rooms and zones (sorted with rooms first) #}
+        {% set hue_groups = 
+          all_hue_entities
+          | selectattr('domain', 'eq', 'light')
+          | selectattr('attributes.is_hue_group', 'eq', true)
+          | sort(attribute='attributes.hue_type', reverse=true)
+          | list
+        %}
+
+        {# Individual lights (not groups) #}
+        {% set hue_lights = 
+          all_hue_entities
+          | selectattr('domain', 'eq', 'light')
+          | reject('in', hue_groups)
+          | list
+        %}
+
+        {# ===================================================================
+          Step 2: Build state snapshot for all rooms and zones
           
-          {#
-            Sub-case: Trigger is a Hue room.
-            The room context is already known.
-          #}
-          {% if is_state_attr(trigger.entity_id, 'hue_type', 'room') %}
-            {% set room_entity = trigger.entity_id %}
+          Iterates through each group (room/zone) and captures:
+          - Group state and brightness
+          - Last activated scene (if group is ON)
+          - Individual light states and brightness
+          - Zone-to-room mappings with coverage percentage
+        =================================================================== #}
+        {% set snapshot = namespace(rooms=[], zones=[], zones_in_rooms=[]) %}
+        {% set build_base_entry = build_base_entry | as_function %}
 
-          {#
-            Sub-case: Trigger is a Hue zone.
-            Resolve the corresponding room by:
-            - Taking the first light from the zone
-            - Finding the room that contains that light
-          #}
-          {% else %}
-            {% set first_light = state_attr(trigger.entity_id,'entity_id') | first %}
-            {% set room_entity =
-              hue_groups
-              | selectattr('attributes.hue_type','eq','room')
-              | selectattr('attributes.entity_id','contains', first_light)
-              | map(attribute='entity_id')
+        {% for group in hue_groups %}
+          {# Initialize group entry with base properties #}
+          {% set group_entry = build_base_entry(group) %}
+
+          {# ---------------------------------------------------------------
+            Add scene data for active groups
+          --------------------------------------------------------------- #}
+          {% if group.state == 'on' %}
+            {# Find the last activated scene for this group #}
+            {% set active_scene = 
+              hue_scenes
+              | selectattr(
+                  'entity_id',
+                  'in',
+                  device_entities(device_id(group.entity_id))
+                )
               | first
             %}
+
+            {% if active_scene is not none %}
+              {% set group_entry = group_entry | combine({
+                'scene': {
+                  'entity_id': active_scene.entity_id,
+                  'last_activated': active_scene.state,
+                  'dynamics_speed': int(active_scene.attributes.speed * 100, 0),
+                  'supports_dynamic': bool(active_scene.attributes.is_dynamic, false),
+                }
+              }) %}
+            {% endif %}
           {% endif %}
         
-        {#
-          Case 2: Trigger entity is a single Hue light.
-          Resolve the room that contains this light.
-        #}
-        {% else %}
-          {% set room_entity =
-            hue_groups
-            | selectattr('attributes.hue_type','eq','room')
-            | selectattr('attributes.entity_id','contains', trigger.entity_id)
-            | map(attribute='entity_id')
-            | first
-          %}
-        {% endif %}
-
-        {#
-          Determine overlapping Hue zones.
-
-          A zone is considered overlapping when:
-          - A room has been resolved
-          - At least one light belongs to both the room and the zone
-
-          These zones may need brightness restoration or scene activation
-          alongside the resolved room.
-        #}
-        {% set ns = namespace(zones=[]) %}
-        {% if room_entity %}
-          {% set room_lights = state_attr(room_entity,'entity_id') %}
-          {% for zone in hue_groups | selectattr('attributes.hue_type','eq','zone') %}
-            {% if state_attr(zone.entity_id,'entity_id') | select('in', room_lights) | list %}
-              {% set ns.zones = ns.zones + [zone.entity_id] %}
-            {% endif %}
+          {# ---------------------------------------------------------------
+            Build light list with individual light states
+          --------------------------------------------------------------- #}
+          {% set group_lights = namespace(items=[]) %}
+          {% for light in hue_lights if light.entity_id in group.attributes['entity_id'] %}
+            {% set group_lights.items = group_lights.items + [build_base_entry(light)] %}
           {% endfor %}
-        {% endif %}
 
-        {#
-          Final resolved context:
-          - room  → the primary Hue room affected by the trigger
-          - zones → all overlapping Hue zones (deduplicated)
-        #}
-        {{ { 'room': room_entity, 'zones': ns.zones | unique | list } }}
+          {# ---------------------------------------------------------------
+            Calculate effective group state
+            
+            A group can be in one of three states:
+            - ON: All non-excluded lights are ON and effect-free
+            - OFF: All non-excluded lights are OFF
+            - PARTIAL_ON: Some lights are ON, some OFF, or effects active
+          --------------------------------------------------------------- #}
+          {% set evaluated_lights = 
+            group_lights.items
+            | selectattr('state_excluded', 'eq', false)
+            | list
+          %}
+          
+          {% set total_evaluated = evaluated_lights | count %}
+          {% set lights_on = evaluated_lights | selectattr('state', 'eq', 'on') | list | count %}
+          {% set lights_effect_free = evaluated_lights | selectattr('has_effect', 'eq', false) | list | count %}
 
-  - alias: "Branch based on successful room resolution"
-    if:
-      - alias: "Check if resolved room is missing"
-        condition: template
-        value_template: "{{ area_context.room is none }}"
+          {# Determine group state based on light conditions #}
+          {% set group_fully_active = total_evaluated > 0 and total_evaluated == lights_on and lights_on == lights_effect_free %}
+          {% set group_fully_off = lights_on == 0 %}
 
-    then:
-      - alias: "Log missing Hue room resolution"
-        action: system_log.write
-        data:
-          level: error
-          message: >
-            Hue Scene Refresher aborted: Unable to resolve a Hue room for trigger entity '{{ trigger.entity_id }}'.
-      
-      - alias: "Stop automation due to missing room context"
-        stop: "No Hue room resolved"
-        error: true
-    
-    else:
-      - alias: "Capture room and zone state snapshot"
-        variables:
-          area_snapshot: >
-            {#
-              Captures a snapshot of the current Hue area state at trigger time.
+          {# Update entry with calculated state and change detection #}
+          {% set group_entry = group_entry | combine({
+            'state': 'on' if group_fully_active else 'off' if group_fully_off else 'partial_on',
+            'has_changed': 
+              group_lights.items 
+              | selectattr('has_changed', 'eq', true)
+              | list 
+              | count > 0 
+              or group.entity_id in trigger_event_ids
+          }) %}
 
-              For the resolved room and any overlapping zones, this snapshot determines:
-              - Whether the area is considered fully ON (state evaluation)
-              - Whether active effects are blocking refresh logic
-              - The last active Hue scene per group
-              - Brightness levels used for restoration
-              - Per-light brightness and force-off candidates (room only)
+          {# ---------------------------------------------------------------
+            Categorize as room or zone, and map zone coverage
+          --------------------------------------------------------------- #}
+          {% if group.attributes['hue_type'] == 'room' %}
+            {# For rooms: find overlapping zones and calculate coverage #}
+            {% set overlapping_zones = namespace(items=[]) %}
 
-              This snapshot is later used to decide:
-              - Whether scenes should be re-activated
-              - Whether brightness should be restored
-              - Whether excluded lights must be turned off again
-            #}
-
-            {% set snapshot = namespace(room = none, zones = []) %}
-
-            {# Build list of all groups to evaluate (room + overlapping zones) #}
-            {% set groups =
-              area_context.zones +
-              ([area_context.room] if area_context.room else [])
-            %}
-
-            {% for group in groups %}
-              {# Expand all light entities belonging to the group #}
-              {% set members = expand(state_attr(group,'entity_id')) | list %}
-
-              {#
-                Lights used for state evaluation:
-                - Excludes lights explicitly removed from state checks
-                - Ignores lights with unknown state
-              #}
-              {% set lights = members
-                | rejectattr('entity_id','in', resolved_targets.state_excluded)
-                | rejectattr('state', 'in', ['unavailable', 'unknown'])
-                | list
-              %}
-
-              {# Lights that are currently ON #}
-              {% set active = lights | selectattr('state','eq','on') | list %}
-
-              {#
-                Lights capable of running effects (e.g. color loop, animations).
-                Used to determine whether active effects should block refresh logic.
-              #}
-              {% set effect_capable =
-                active | selectattr('attributes.effect','ne', undefined) | list
-              %}
-
-              {#
-                Effects are considered clear when:
-                - Active effects are explicitly allowed
-                - OR all effect-capable lights are not currently running an effect
-              #}
-              {% set effects_clear =
-                allow_active_effects or
-                (effect_capable
-                  | selectattr('attributes.effect','in',[none, off, 'none', 'off'])
-                  | list | count == effect_capable | count)
-              %}
-
-              {#
-                A group is considered fully ON when:
-                - At least one evaluated light exists
-                - All evaluated lights are ON
-                - No blocking effects are active
-              #}
-              {% set is_area_on =
-                lights | count > 0 and
-                active | count == lights | count and
-                effects_clear
-              %}
-
-              {#
-                Determine the last active Hue scene for this group by:
-                - Collecting all scene entities bound to the group device
-                - Sorting by state timestamp (newest first)
-                - Selecting the most recent non-unknown scene
-              #}
-              {% set last_scene =
-                expand(device_entities(device_id(group)))
-                | selectattr('domain', 'eq', 'scene')
-                | rejectattr('state','in', ['unavailable', 'unknown'])
-                | sort(attribute='state', reverse=true)
+            {% for zone in snapshot.zones %}
+              {# Count how many zone lights are in this room #}
+              {% set overlap_count = 
+                zone.lights 
                 | map(attribute='entity_id')
+                | select('in', group_lights.items | map(attribute='entity_id'))
                 | list
-                | first
+                | count
               %}
-
-              {#
-                Base snapshot data shared by rooms and zones
-              #}
-              {% set group_data = {
-                'entity_id': group,
-                'brightness': state_attr(group,'brightness'),
-                'scene_speed': (state_attr(last_scene, 'speed') | default(50)) * 100,
-                'is_area_on': is_area_on,
-                'last_scene': last_scene
-              } %}
-
-              {% if group == area_context.room %}
-                {#
-                  Room-specific snapshot data:
-
-                  - Capture per-light brightness for later restoration
-                  - Track excluded lights that were OFF at snapshot time,
-                    so they can be forcefully turned off again after scene activation
-                #}
-
-                {% set light_snapshot = namespace(items=[]) %}
-                {% for light in active %}
-                  {% set light_snapshot.items = light_snapshot.items + [{
-                    'entity_id': light.entity_id,
-                    'brightness': light.attributes.brightness
-                  }] %}
-                {% endfor %}
+              
+              {% if overlap_count > 0 %}
+                {# Mark this zone as assigned to avoid duplication in output #}
+                {% set snapshot.zones_in_rooms = snapshot.zones_in_rooms + [zone] %}
                 
-                {#
-                  Lights excluded from state evaluation that are currently OFF.
-                  These may be turned ON by scene activation and must be corrected.
-                #}
-                {% set state_excluded = members
-                  | selectattr('entity_id', 'in', resolved_targets.state_excluded)
-                  | selectattr('state', 'eq', 'off')
-                  | map(attribute='entity_id')
-                  | list
-                %}
-
-                {% set group_data = group_data | combine({
-                  'active_lights': light_snapshot.items,
-                  'state_excluded_lights': state_excluded
+                {# Calculate coverage percentage (zone lights / room lights) #}
+                {% set zone = zone | combine({
+                  'coverage': (overlap_count / group_lights.items | count * 100) | round(2)
                 }) %}
 
-                {% set snapshot.room = group_data %}
-
-              {% elif is_area_on %}
-                {#
-                  Zones are only included when fully ON.
-                  Partially ON zones are intentionally ignored to avoid
-                  unintended scene or brightness changes.
-                #}
-                {% set snapshot.zones = snapshot.zones + [group_data] %}
+                {% set overlapping_zones.items = overlapping_zones.items + [zone] %}
               {% endif %}
             {% endfor %}
 
-            {{ { 'room': snapshot.room, 'zones': snapshot.zones } }}
+            {# Attach zones and lights to room entry #}
+            {% set group_entry = group_entry | combine({
+              'zones': overlapping_zones.items,
+              'lights': group_lights.items
+            }) %}
+          
+            {% set snapshot.rooms = snapshot.rooms + [group_entry] %}
 
-      - alias: "Branch based on room activity at snapshot time"
-        if:
-          - alias: "Check if room has no active lights"
-            condition: template
-            value_template: "{{ area_snapshot.room.active_lights | count == 0 }}"
-        
-        then:
-          - alias: "Execute configured actions for inactive room"
-            choose: []
-            default: !input turn_off_actions
+          {% elif group.attributes['hue_type'] == 'zone' %}
+            {# For zones: initialize with 0% coverage (updated when assigned to room) #}
+            {% set group_entry = group_entry | combine({
+              'coverage': 0,
+              'lights': group_lights.items
+            }) %}
+          
+            {% set snapshot.zones = snapshot.zones + [group_entry] %}
+          {% endif %}
+        {% endfor %}
 
-        else:
-          - alias: "Group room lights by target brightness"
-            variables:
-              room_brightness_batches: >
-                {#
-                  Groups room lights by target brightness value to minimize service calls.
+        {# ===================================================================
+          Step 3: Output final snapshot
+          
+          Returns only unassigned zones (those not mapped to any room)
+          alongside all rooms with their embedded zone references
+        =================================================================== #}
+        {{ {
+          'rooms': snapshot.rooms,
+          'zones': snapshot.zones 
+            | reject('in', snapshot.zones_in_rooms) 
+            | list
+        } }}
 
-                  Purpose:
-                  - Avoid issuing one light.turn_on call per light
-                  - Batch lights that share the same target brightness
-                  - Reduce Hue bridge load and visual flicker
+  - alias: "Determine affected groups requiring scene refresh"
+    variables:
+      affected: >
+        {# ===================================================================
+          Analyze state transitions to determine refresh targets
+          
+          Logic:
+          - Room ON → PARTIAL_ON: Refresh all zones in that room
+          - Room PARTIAL_ON → PARTIAL_ON: Refresh only zones that changed
+          - Room → OFF or ON: Refresh the room itself
+          
+          Note: Partial_on state means mixed light states (some on, some off)
+        =================================================================== #}
+        {% set affected = namespace(rooms=[], zones=[]) %}
 
-                  Processing rules:
-                  - Only considers lights that were ON at snapshot time
-                  - Excludes entities explicitly removed from brightness restoration
-                  - Ignores lights without a valid snapshot brightness
-                  - Skips lights that are already at the desired brightness
-                #}
+        {# ===================================================================
+          Process rooms with state changes
+        =================================================================== #}
+        {% for room in hue_snapshot.rooms if room.has_changed %}
+          
+          {# ---------------------------------------------------------------
+            Determine if room transitioned from ON to PARTIAL_ON
+            
+            Reconstruct previous state by reversing changed lights:
+            - Changed lights now OFF were previously ON
+            - Changed lights now ON were previously OFF
+            - Unchanged lights had the same state before
+            
+            If reversing changes results in all lights ON, then ON → PARTIAL_ON
+          --------------------------------------------------------------- #}
+          {% set evaluated_lights = room.lights | selectattr('state_excluded', 'eq', false) | list %}
+          {% set changed_lights = evaluated_lights | selectattr('has_changed', 'eq', true) | list %}
+          
+          {# Count lights that would have been ON before the change #}
+          {% set lights_on_before = namespace(count=0) %}
+          {% for light in evaluated_lights %}
+            {% if light.has_changed %}
+              {# Reverse the change: if OFF now, was ON before #}
+              {% if light.state == 'off' %}
+                {% set lights_on_before.count = lights_on_before.count + 1 %}
+              {% endif %}
+            {% else %}
+              {# Unchanged: use current state #}
+              {% if light.state == 'on' and not light.get('has_effect', false) %}
+                {% set lights_on_before.count = lights_on_before.count + 1 %}
+              {% endif %}
+            {% endif %}
+          {% endfor %}
+          
+          {% set room_was_on = room.state == 'partial_on' and lights_on_before.count == evaluated_lights | count %}
 
-                {% set ns = namespace(groups={}) %}
-
-                {% for light in area_snapshot.room.active_lights
-                  | rejectattr('entity_id','in', resolved_targets.brightness_excluded)
-                  | selectattr('brightness','ne', none)
-                %}
-                  {% set key = light.brightness | string %}
-
-                  {# Append light entity_id to the appropriate brightness bucket #}
-                  {% set ns.groups = ns.groups | combine({
-                    key: (ns.groups[key] if key in ns.groups else []) + [light.entity_id]
-                  }) %}
-                {% endfor %}
-
-                {{ ns.groups }}
-
-          - alias: "Branch based on room fully-on state"
-            if:
-              - alias: "Check if entire room is currently ON"
-                condition: template
-                value_template: "{{ area_snapshot.room.is_area_on }}"
-
-            then:
-              - alias: "Ensure a scene was found"
-                condition: template
-                value_template: "{{ area_snapshot.room.last_scene is not none }}"
-
-              - alias: "Build Hue scene payload for room activation"
-                variables:
-                  scene_data: >
-                    {#
-                      Scene payload for Hue room activation.
-                      Dynamic mode and brightness restoration are applied conditionally.
-                    #}
-
-                    {% set data = {
-                      'dynamic': area_snapshot.room.entity_id in resolved_targets.dynamic,
-                      'speed': dynamic_scene_speed if dynamic_scene_speed > -1 else area_snapshot.room.scene_speed,
-                      'transition': scene_transition_time
-                    } %}
-
-                    {% if area_snapshot.room.entity_id not in resolved_targets.brightness_excluded %}
-                      {% set data = data | combine({
-                        'brightness': area_snapshot.room.brightness
-                      }) %}
-                    {% endif %}
-
-                    {{ data }}
-                    
-              - alias: "Activate last active scene for room"
-                action: hue.activate_scene
-                continue_on_error: true
-                data: "{{ scene_data }}"
-                target:
-                  entity_id: "{{ area_snapshot.room.last_scene }}"
+          {# ---------------------------------------------------------------
+            Apply refresh logic based on state transition
+          --------------------------------------------------------------- #}
+          {% if room.state == 'partial_on' %}
+            
+            {% if room_was_on %}
+              {# ON → PARTIAL_ON: Refresh all zones #}
+              {% for zone in room.zones %}
+                {% set affected.zones = affected.zones + [zone] %}
+              {% endfor %}
               
-              - alias: "Restore brightness for overlapping zones"
-                repeat:
-                  for_each: >
-                    {{ 
-                      area_snapshot.zones 
-                      | rejectattr('entity_id','in', resolved_targets.brightness_excluded) 
-                      | list 
-                    }}
+            {% else %}
+              {# PARTIAL_ON → PARTIAL_ON: Refresh only changed zones #}
+              {% for zone in room.zones if zone.has_changed %}
+                {% set affected.zones = affected.zones + [zone] %}
+              {% endfor %}
+            {% endif %}
+            
+          {% else %}
+            {# Room is ON or OFF: Refresh the room itself #}
+            {% set affected.rooms = affected.rooms + [room] %}
+          {% endif %}
 
-                  sequence:
-                    - alias: "Apply brightness to zone"
-                      action: light.turn_on
-                      continue_on_error: true
-                      data:
-                        brightness: "{{ repeat.item.brightness }}"
-                        transition: "{{ brightness_transition_time }}"
-                      target:
-                        entity_id: "{{ repeat.item.entity_id }}"
+        {% endfor %}
 
-            else:
-              - alias: "Activate scenes for fully-on zones only"
-                repeat:
-                  for_each: >
-                    {{ 
-                      area_snapshot.zones 
-                      | rejectattr('last_scene','eq', none) 
-                      | list 
-                    }}
+        {# ===================================================================
+          Process unassigned zones with state changes
+          
+          Only zones not mapped to any room are processed here
+        =================================================================== #}
+        {% for zone in hue_snapshot.zones if zone.has_changed %}
+          {% set affected.zones = affected.zones + [zone] %}
+        {% endfor %}
 
-                  sequence:
-                    - alias: "Build Hue scene payload for zone activation"
-                      variables:
-                        scene_data: >
-                          {#
-                            Scene payload for Hue zone activation.
-                            Brightness restoration is optional.
-                          #}
+        {# ===================================================================
+          Output affected groups for scene refresh
+        =================================================================== #}
+        {{ {
+          'rooms': affected.rooms,
+          'zones': affected.zones
+        } }}
 
-                          {% set data = {
-                            'dynamic': repeat.item.entity_id in resolved_targets.dynamic,
-                            'speed': dynamic_scene_speed if dynamic_scene_speed > -1 else repeat.item.scene_speed,
-                            'transition': scene_transition_time
-                          } %}
+  - alias: "Process and refresh each affected room and zone"
+    repeat:
+      for_each: >
+        {# Combine rooms and zones into single list for processing #}
+        {{ affected.rooms + affected.zones }}
+      
+      sequence:
+        - alias: "Route processing based on group state"
+          choose:
+          - conditions:
+            - alias: "Group is currently ON"
+              condition: template
+              value_template: "{{ repeat.item.state == 'on' }}"
 
-                          {% if repeat.item.entity_id not in resolved_targets.brightness_excluded and repeat.item.brightness is not none %}
-                            {% set data = data | combine({
-                              'brightness': repeat.item.brightness
-                            }) %}
-                          {% endif %}
+            sequence:
+              - alias: "Check if group has an active scene"
+                choose:
+                  - conditions:
+                    - alias: "Group has an active scene"
+                      condition: template
+                      value_template: "{{ repeat.item.scene is defined }}"
+                
+                    sequence:
+                      - alias: "Prepare scene activation data"
+                        variables:
+                          scene_data: >
+                            {# ===================================================================
+                              Build scene activation parameters
+                              
+                              Includes: transition time, dynamic settings (if supported),
+                              and brightness (if not excluded)
+                            =================================================================== #}
+                            {% set data = {
+                              'transition': scene_transition_time
+                            } %}
 
-                          {{ data }}
-                    
-                    - alias: "Activate last active scene for zone"
-                      action: hue.activate_scene
-                      continue_on_error: true
-                      data: "{{ scene_data }}"
-                      target:
-                        entity_id: "{{ repeat.item.last_scene }}"
-              
-          - alias: "Optionally turn off state-excluded lights (room)"
-            if:
-              - alias: "Check if excluded lights should be forced off"
-                condition: template
-                value_template: "{{ turn_off_state_excluded_lights }}" 
-              
-              - alias: "Check if any excluded lights need to be turned off"
-                condition: template
-                value_template: "{{ area_snapshot.room.state_excluded_lights | count > 0 }}"
+                            {# Add dynamic scene settings if scene supports it #}
+                            {% if repeat.item.scene.supports_dynamic %}
+                              {% set data = data | combine({
+                                'dynamic': repeat.item.entity_id in resolved_targets.dynamic,
+                                'speed': dynamic_scene_speed if dynamic_scene_speed != -1 else repeat.item.scene.dynamics_speed
+                              }) %}
+                            {% endif %}
 
-            then:
-              - alias: "Turn off excluded lights in room"
-                action: light.turn_off
-                data:
-                  transition: "{{ brightness_transition_time }}"
-                target:
-                  entity_id: "{{ area_snapshot.room.state_excluded_lights }}"
+                            {# Add brightness if not excluded from restoration #}
+                            {% if repeat.item.entity_id not in resolved_targets.brightness_excluded %}
+                              {% set data = data | combine({
+                                'brightness': repeat.item.brightness
+                              }) %}
+                            {% endif %}
+
+                            {{ data }}
                         
-          - alias: "Restore room brightness in batches"
-            repeat:
-              for_each: >
-                {{ 
-                  room_brightness_batches.items() 
-                  | list 
-                }}
+                      - alias: "Activate Hue scene"
+                        action: hue.activate_scene
+                        continue_on_error: true
+                        data: "{{ scene_data }}"
+                        target:
+                          entity_id: "{{ repeat.item.scene.entity_id }}"
 
-              sequence:
-                - alias: "Apply batched brightness"
-                  action: light.turn_on
-                  continue_on_error: true
-                  data:
-                    brightness: "{{ repeat.item[0] | int }}"
-                    transition: "{{ brightness_transition_time }}"
-                  target:
-                    entity_id: "{{ repeat.item[1] }}"
+                default:
+                  - alias: "Log skipped refresh (no scene found)"
+                    continue_on_error: true
+                    data:
+                      name: "Hue Scene Refresher"
+                      message: >
+                        "Skipped scene refresh for {{ repeat.item.entity_id }}: No active scene detected."
+                    service: logbook.log
+                    
+              - alias: "Handle state-excluded lights"
+                choose:
+                  - conditions:
+                    - alias: "Feature is enabled"
+                      condition: template
+                      value_template: "{{ turn_off_state_excluded_lights }}"
 
-          - alias: "Execute configured post-activation actions"
-            choose: []
-            default: !input post_activation_actions
+                    - alias: "Group contains state-excluded lights"
+                      condition: template
+                      value_template: "{{ repeat.item.lights | selectattr('state_excluded', 'eq', true) | list | count > 0 }}"
+                
+                    sequence:
+                      - alias: "Turn off state-excluded lights"
+                        action: light.turn_off
+                        data:
+                          transition: "{{ brightness_transition_time }}"
+                        target:
+                          entity_id: >
+                            {{ 
+                              repeat.item.lights 
+                              | selectattr('state_excluded', 'eq', true) 
+                              | map(attribute='entity_id') 
+                              | list 
+                            }}
+
+                default: []
+
+              - alias: "Group lights by brightness level"
+                variables:
+                  brightness_batches: >
+                    {# ===================================================================
+                      Batch lights by brightness for efficient restoration
+                      
+                      Groups lights with the same brightness together to minimize
+                      service calls and improve performance
+                    =================================================================== #}
+                    {% set ns = namespace(groups={}) %}
+
+                    {% for light in repeat.item.lights
+                      | rejectattr('state','ne','on')
+                      | rejectattr('entity_id','in', resolved_targets.brightness_excluded)
+                      | selectattr('brightness','gt', 0)
+                    %}
+                      {% set key = light.brightness | string %}
+
+                      {% set ns.groups = ns.groups | combine({
+                        key: (ns.groups[key] if key in ns.groups else []) + [light.entity_id]
+                      }) %}
+                    {% endfor %}
+
+                    {{ ns.groups }}
+
+              - alias: "Restore brightness if batches exist"
+                choose:
+                - conditions:
+                  - alias: "Brightness batches were created"
+                    condition: template
+                    value_template: "{{ brightness_batches | count > 0 }}"
+
+                  sequence:
+                    - alias: "Restore brightness for each batch"
+                      repeat:
+                        for_each: >
+                          {# Process each brightness group as [brightness_value, [entity_ids]] #}
+                          {{ 
+                            brightness_batches.items() 
+                            | list 
+                          }}
+
+                        sequence:
+                          - alias: "Apply brightness to light batch"
+                            action: light.turn_on
+                            continue_on_error: true
+                            data:
+                              brightness: "{{ repeat.item[0] | int }}"
+                              transition: "{{ brightness_transition_time }}"
+                            target:
+                              entity_id: "{{ repeat.item[1] }}"
+                
+                default: []
+                  
+              - alias: "Execute post-activation actions"
+                choose: []
+                default: !input post_activation_actions            
+
+          default:
+            - alias: "Execute turn-off actions for effectively OFF group"
+              choose: []
+              default: !input turn_off_actions
+        
