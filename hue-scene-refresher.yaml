@@ -1,28 +1,38 @@
 blueprint:
-  name: Hue Scene Refresher (v2.8)
+  name: Hue Scene Refresher (v2.9)
   domain: automation
   author: Electro_Attacks
   description: >
     Intelligently refreshes Philips Hue scenes when lights change state, using advanced state transition detection to minimize unnecessary updates.
 
+    ## Core Features
 
-    **Core Features:**
+    ### 🎯 Three-State System
+    Groups are evaluated as `ON` (all lights on, no effects), `OFF` (all lights off), or `PARTIAL_ON` (mixed states)
 
-    • **Three-State System**: Groups are evaluated as ON (all lights on, no effects), OFF (all lights off), or PARTIAL_ON (mixed states)
+    ### 🧠 Smart Refresh Logic
+    State transition awareness determines refresh targets:
+    - `ON` → `PARTIAL_ON` refreshes **all zones**
+    - `PARTIAL_ON` → `PARTIAL_ON` refreshes **only changed zones**
+    - Direct `ON`/`OFF` transitions refresh **the room itself**
 
-    • **Smart Refresh Logic**: State transition awareness determines refresh targets - ON → PARTIAL_ON refreshes all zones, PARTIAL_ON → PARTIAL_ON refreshes only changed zones, direct ON/OFF transitions refresh the room itself
+    ### ⚡ Batch Optimization
+    Brightness restoration groups lights by target brightness level, reducing Hue bridge API calls and improving performance
 
-    • **Batch Optimization**: Brightness restoration groups lights by target brightness level, reducing Hue bridge API calls and improving performance
+    ### 🎬 Dynamic Scene Support
+    Configurable playback speed for animated Hue scenes with automatic settle delays
 
-    • **Dynamic Scene Support**: Configurable playback speed for animated Hue scenes with automatic settle delays
+    ### 🗺️ Zone Coverage Mapping
+    Automatically detects and refreshes overlapping zones within rooms based on light membership
 
-    • **Zone Coverage Mapping**: Automatically detects and refreshes overlapping zones within rooms based on light membership
+    ### ✨ Effect Detection
+    Optionally respects or ignores active light effects (`colorloop`, etc.) when determining group state
 
-    • **Effect Detection**: Optionally respects or ignores active light effects (colorloop, etc.) when determining group state
+    ### 🎛️ Fine-Grained Control
+    Exclude specific lights from state evaluation or brightness restoration while still allowing scene participation
 
-    • **Fine-Grained Control**: Exclude specific lights from state evaluation or brightness restoration while still allowing scene participation
-
-    • **Post-Action Hooks**: Execute custom actions when rooms go OFF or after successful scene refresh completion
+    ### 🔗 Post-Action Hooks
+    Execute custom actions when rooms go `OFF` or after successful scene refresh completion
   homeassistant:
     min_version: 2025.12.4
 
@@ -31,14 +41,16 @@ blueprint:
       name: Trigger Configuration
       icon: mdi:flash
       description: >
-        Defines which events initiate a Hue scene refresh. 
+        Defines which events initiate a Hue scene refresh using an active polling mechanism.
+        When any target changes state, the automation enters a collection phase to capture rapid-fire events.
         Triggers must resolve to a Hue light, room, or zone to be considered valid.
       input:
         targets:
           name: Observed Hue Targets
           description: >
             Hue lights, rooms, or zones to observe for state changes.
-            Any ON/OFF transition within these targets will trigger the automation.
+            Any ON/OFF transition within these targets will initiate the polling collection phase.
+            The automation will then capture all state changes across monitored entities until stability is reached.
             The affected Hue room is resolved automatically from the triggering entity.
           selector:
             target:
@@ -48,10 +60,13 @@ blueprint:
                 domain: light
 
         state_trigger_delay:
-          name: Trigger Evaluation Delay
+          name: State Polling Interval
           description: >
-            Delay (in seconds) before evaluating the Hue scene state after a trigger.
-            This allows the Hue bridge to fully update group states before processing.
+            Polling interval (in seconds) used to collect state changes after initial trigger.
+            The automation will repeatedly check for lights with recent state changes (within this timeframe)
+            until no new events are detected, ensuring comprehensive capture of rapid sequences.
+            Higher values capture more events but delay processing; lower values respond faster but may miss events.
+            Minimum effective interval is 0.25 seconds.
           default: 1
           selector:
             number:
@@ -65,7 +80,8 @@ blueprint:
           name: Additional Trigger Sources
           description: >
             Optional additional triggers, such as attribute or service-based changes.
-            These triggers must still resolve to a Hue light entity to be processed.
+            These triggers must still resolve to a Hue light entity to be processed and will also
+            initiate the polling collection phase when activated.
           default: []
           selector:
             trigger:
@@ -715,7 +731,7 @@ actions:
 
         {{ {
           'metadata': {
-            'version': '2.8',
+            'version': '2.9',
             'timestamp': utcnow().isoformat(),
           },
           'rooms': snapshot.rooms,
