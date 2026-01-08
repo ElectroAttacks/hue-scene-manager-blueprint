@@ -1,70 +1,33 @@
 blueprint:
-  name: Hue Scene Refresher (v2.10)
+  name: Hue Scene Refresher (v2.11)
   domain: automation
   author: Electro_Attacks
   description: >
-    Intelligently refreshes Philips Hue scenes when lights change state, using advanced state transition detection to minimize unnecessary updates.
+    Intelligently refreshes Philips Hue scenes when lights change state, using advanced state transition detection to minimise unnecessary updates.
 
-    ## Core Features
-
-    - **Three-State System** — Groups are evaluated based on their light composition:
-      - `ON`: All lights active with no effects running
-      - `OFF`: All lights turned off
-      - `PARTIAL_ON`: Mixed states or active effects detected
-
-    - **Smart Refresh Logic** — Determines refresh targets based on state transitions:
-      - `ON` → `PARTIAL_ON`: Refreshes all zones in the room
-      - `PARTIAL_ON` → `PARTIAL_ON`: Refreshes only zones that changed
-      - Direct `ON`/`OFF`: Refreshes the room itself
-
-    - **Batch Optimization** — Improves performance through intelligent grouping:
-      - Groups lights by target brightness level
-      - Reduces Hue bridge API calls
-      - Minimizes network overhead during restoration
-
-    - **Dynamic Scene Support** — Full control over animated Hue scenes:
-      - Configurable playback speed override
-      - Automatic settle delays based on transition time
-      - Per-target dynamic mode configuration
-
-    - **Zone Coverage Mapping** — Intelligent hierarchical scene management:
-      - Detects overlapping zones within rooms
-      - Calculates zone coverage percentages
-      - Automatically refreshes affected zones based on light membership
-
-    - **Effect Detection** — Flexible handling of active light effects:
-      - Optional effect awareness (`colorloop`, etc.)
-      - Configurable blocking or ignoring of effects
-      - Prevents scene refresh conflicts with running animations
-
-    - **Fine-Grained Control** — Exclude specific entities from processing:
-      - State evaluation exclusions (lights ignored when determining group state)
-      - Brightness restoration exclusions (lights skip brightness reset)
-      - Scene participation still allowed for excluded lights
-
-    - **Post-Action Hooks** — Execute custom automations at key moments:
-      - Trigger actions when rooms transition to `OFF`
-      - Execute logic after successful scene refresh
-      - Chain additional automations or notifications
+    Combines three-state evaluation (`on`/`off`/`partial_on`) with transition-aware targeting so only the required rooms and zones are refreshed.
   homeassistant:
     min_version: 2025.12.4
 
   input:
     triggers:
-      name: Trigger Configuration
+      name: Trigger Monitoring & Polling
       icon: mdi:flash
       description: >
-        Defines which events initiate a Hue scene refresh using an active polling mechanism.
-        When any target changes state, the automation enters a collection phase to capture rapid-fire events.
-        Triggers must resolve to a Hue light, room, or zone to be considered valid.
+        Configure which Hue entities trigger a refresh and how bursty state changes are gathered before decisions are made.
+
+        When any monitored entity changes, a polling window opens that:
+        - Repeats every configured interval while additional changes occur
+        - Collects every Hue light transition into a single evaluation
+        - Provides the full context so room and zone targeting stays accurate     
       input:
         targets:
-          name: Observed Hue Targets
+          name: Monitored Hue Entities
           description: >
-            Hue lights, rooms, or zones to observe for state changes.
-            Any ON/OFF transition within these targets will initiate the polling collection phase.
-            The automation will then capture all state changes across monitored entities until stability is reached.
-            The affected Hue room is resolved automatically from the triggering entity.
+            Hue lights, rooms, or zones observed for `on`/`off` transitions.
+
+            Any change within these targets begins the polling window so related updates are captured before scenes are refreshed.
+            Supports direct entity IDs as well as devices, areas, floors, or labels linked to the Hue integration.
           selector:
             target:
               device:
@@ -73,13 +36,12 @@ blueprint:
                 domain: light
 
         state_trigger_delay:
-          name: State Polling Interval
+          name: Polling Interval (seconds)
           description: >
-            Polling interval (in seconds) used to collect state changes after initial trigger.
-            The automation will repeatedly check for lights with recent state changes (within this timeframe)
-            until no new events are detected, ensuring comprehensive capture of rapid sequences.
-            Higher values capture more events but delay processing; lower values respond faster but may miss events.
-            Minimum effective interval is 0.25 seconds.
+            Time window used to detect recent state changes during the collection phase.
+
+            Higher values capture longer change bursts but delay the refresh. Lower values respond faster yet risk missing rapid sequences.
+            Side effect: Also acts as the pause between polling attempts (minimum effective interval is 0.25 seconds).
           default: 1
           selector:
             number:
@@ -90,23 +52,31 @@ blueprint:
               mode: slider
 
         alternative_triggers:
-          name: Additional Trigger Sources
+          name: Supplemental Trigger Sources
           description: >
-            Optional additional triggers, such as attribute or service-based changes.
-            These triggers must still resolve to a Hue light entity to be processed and will also
-            initiate the polling collection phase when activated.
+            Optional triggers for attribute changes, or other custom events that resolve to a Hue light.
+
+            These triggers reuse the same polling process as standard state changes.
+            Requirements: `trigger.entity_id` must exist, belong to the `light` domain, and originate from the Hue integration.
           default: []
           selector:
             trigger:
 
     scene_options:
-      name: Scene Behavior
+      name: Scene Activation & Brightness Control
       icon: mdi:palette
-      description: Configuration related to scene activation and animation behavior.
+      description: >
+        Define scene transition timings and how brightness is restored once the refresh completes.
+
+        Scenes activate with configurable transition durations, while brightness restoration batches lights by target level to reduce Hue bridge calls.
       input:
         transition_time:
-          name: Brightness Restore Transition
-          description: Transition duration (in seconds) used when restoring brightness for individual lights, rooms, or zones.
+          name: Brightness Transition Duration
+          description: >
+            Duration (seconds) used when restoring individual light brightness after scene activation.
+
+            Shorter values feel snappier; longer values create smoother fades. 
+            Applies to rooms, zones, and standalone lights during the restore step.
           default: 2
           selector:
             number:
@@ -117,10 +87,12 @@ blueprint:
               mode: slider
 
         scene_transition_time:
-          name: Scene Activation Transition
+          name: Scene Activation Duration
           description: >
-            Transition duration (in seconds) used when activating Hue scenes.
-            This value is also used to calculate internal settle delays.
+            Duration (seconds) used when activating Hue scenes.
+
+            Shorter values feel snappier; longer values create smoother fades. 
+            Applies to all scene activations during the refresh process.
           default: 4
           selector:
             number:
@@ -133,10 +105,10 @@ blueprint:
         dynamic_scene_speed:
           name: Dynamic Scene Speed Override
           description: >
-            Playback speed for dynamic Hue scenes.
-            Set to -1 to preserve the scene's original speed.
-            Otherwise, the provided value will override the scene default.
-            Lower values result in slower animations.
+            Playback speed override for scenes with dynamic effects enabled.
+
+            Use `-1` to keep each scene's default animation speed. 
+            Any other value overrides the speed (lower numbers slow animations).
           default: -1
           selector:
             number:
@@ -146,10 +118,12 @@ blueprint:
               mode: slider
 
         targets_with_dynamic_scenes:
-          name: Dynamic Scene Targets
+          name: Dynamic Scene Groups
           description: >
-            Hue rooms or zones that should activate scenes in dynamic mode.
-            Only applies when the resolved target matches one of these entries.
+            Hue rooms or zones that should activate scenes with dynamic playback enabled.
+
+            Provide the group entity_id (not the individual lights). 
+            Matching groups call `hue.activate_scene` with `dynamic: true` and apply the configured speed override.
           default: []
           selector:
             target:
@@ -159,34 +133,44 @@ blueprint:
                 domain: light
 
     advanced_options:
-      name: Advanced Logic & Safeguards
+      name: Advanced Evaluation & Safeguards
       icon: mdi:cog
-      description: Optional safety rules, exclusions, and corrective behavior.
+      description: >
+        Fine-tune group evaluation, zone handling, and automatic protections that run before and after scene activation.
+
+        Groups are assessed using three states (`on`, `off`, `partial_on`), overlapping zones are mapped automatically, and exclusions let you decide which lights influence decisions.
+        Technical note: Lights excluded from evaluation still participate in scenes but are ignored when computing group state and coverage.
       collapsed: true
       input:
         ignore_active_effects:
-          name: Ignore Active Light Effects
+          name: Treat Active Effects As On
           description: >
-            If enabled, a room or zone may be considered fully ON even when one or more lights have active effects (e.g., color loop).
-            If disabled, active effects will block scene refreshes.
+            Allow lights running Hue effects (for example `colorloop`) to count toward a group's `on` state.
+
+            Disable to force any active effect to mark the group as `partial_on`, which can prevent refreshes or alter zone targeting.
+            Side effect: Enabling may cause effects to be overridden when scenes are reactivated.
           default: false
           selector:
             boolean:
         
         turn_off_state_excluded_lights:
-          name: Force Off State-Excluded Lights
+          name: Force Off Excluded Lights
           description: >
-            If enabled, lights excluded from the state check that were OFF at snapshot time will be turned OFF again after scene activation.
-            This prevents excluded lights from remaining unintentionally ON.
+            Ensure lights excluded from state evaluation that were `off` in the snapshot are switched off again after the refresh.
+
+            Prevents scenes from leaving excluded lights on unintentionally.
+            Side effect: If the scene attempts to turn an excluded light on, it will be forced off immediately afterward.
           default: true
           selector:
             boolean:
             
         targets_excluded_from_state_check:
-          name: Exclude Targets from State Evaluation
+          name: Entities Ignored For State Evaluation
           description: >
-            Hue lights that should be ignored when determining whether a room or zone is considered fully ON.
-            These lights will still turn on if included in the Hue scene, but their state will not impact scene refresh logic.
+            Hue lights that should not influence the `on`/`off`/`partial_on` assessment.
+
+            Excluded lights still follow scene activation but are filtered out when counting active lights.
+            Use case: Keep decorative or sensor-linked lights from affecting refresh decisions while leaving them in the scene definition.
           default: []
           selector:
             target:
@@ -196,10 +180,12 @@ blueprint:
                 domain: light
 
         targets_excluded_from_brightness_restore:
-          name: Exclude Targets from Brightness Restoration
+          name: Entities Skipping Brightness Restore
           description: >
-            Hue lights, rooms, or zones that should not have their brightness restored after a scene refresh.
-            Scene activation will still occur unless otherwise excluded.
+            Lights, rooms, or zones that should keep the scene's brightness rather than being restored to the snapshot level.
+
+            Ideal for accent lighting that should follow the scene exactly.
+            Side effect: These entities will not revert to their previous brightness after the refresh sequence.
           default: []
           selector:
             target:
@@ -209,26 +195,32 @@ blueprint:
                 domain: light
 
     post_actions:
-      name: Optional Post-Actions
+      name: Post-Refresh Automation Hooks
       icon: mdi:run
       description: >
-        Optional actions executed either when no active room lights are detected or after successful scene activation and brightness restoration.
+        Run custom automations when a group finishes in an `off` state or after scene processing completes.
+
+        Executes inside the room/zone loop so each affected group can apply its own logic.
+        Technical note: Use `repeat.item[0]` for the group entity_id and `repeat.item[1]` for its snapshot (`state`, `brightness`, `scene`, `lights`, `zones`).
       collapsed: true
       input:
         turn_off_actions:
-          name: Actions When Room Is Effectively OFF
+          name: Actions When Group Turns Off
           description: >
-            Actions executed when the resolved Hue room contains no active lights at snapshot time. 
-            Typical use cases include powering down media devices or triggering fallback automations.
+            Executed when the evaluated room or zone ends with no active lights.
+
+            Typical uses include powering down media gear, switching off plugs, sending notifications, or triggering cleanup routines.
+            Technical note: Only runs when `repeat.item[1].state` equals `off`.
           default: []
           selector:
             action:
 
         post_activation_actions:
-          name: Actions After Scene Refresh
+          name: Actions After Refresh Completes
           description: >
-            Actions executed after the Hue scene has been refreshed and all brightness restoration logic has completed successfully.
-            Useful for notifications, logging, or chaining automations.
+            Executed after scene activation and brightness restoration finish without errors.
+
+            Useful for logging, follow-up automations, or notifications. Access `repeat.item[1].scene` to reference the reactivated scene.
           default: []
           selector:
             action:
