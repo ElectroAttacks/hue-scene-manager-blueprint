@@ -421,10 +421,6 @@ actions:
           variables:
             previous_event_count: "{{ trigger_events | count }}"
 
-        - alias: "Delay before next poll"
-          delay:
-            seconds: "{{ state_trigger_delay }}"
-
         - alias: "Poll for recently changed Hue lights"
           variables:
             trigger_events: |
@@ -448,6 +444,11 @@ actions:
               {% endfor %}
 
               {{ events.data }}
+          
+        - alias: "Delay before next poll"
+          delay:
+            seconds: "{{ state_trigger_delay }}"
+
   
   - alias: "Finalize state change tracking"
     variables:
@@ -620,16 +621,27 @@ actions:
           {% set group_fully_active = total_evaluated > 0 and total_evaluated == lights_on and lights_on == lights_effect_free %}
           {% set group_fully_off = lights_on == 0 %}
 
-          {# Update entry with calculated state and change detection #}
+          {# Update entry with calculated state #}
           {% set group_entry = group_entry | combine({
             'state': 'on' if group_fully_active else 'off' if group_fully_off else 'partial_on',
-            'has_changed': 
-              group_lights.items.values()
-              | selectattr('has_changed', 'eq', true)
-              | list 
-              | count > 0 
-              or group.entity_id in trigger_event_ids
           }) %}
+
+          {# ---------------------------------------------------------------
+            Optimize change detection
+            
+            If group entity itself changed (was directly triggered), has_changed
+            is already true from macro. Otherwise, check if any nested light
+            changed. This avoids expensive iteration when group was triggered.
+          --------------------------------------------------------------- #}
+          {% if not group_entry.has_changed %}
+            {% set group_entry = group_entry | combine({
+              'has_changed':
+                group_lights.items.values()
+                | selectattr('has_changed', 'eq', true)
+                | list 
+                | count > 0 
+            }) %}
+          {% endif %}
 
           {# ---------------------------------------------------------------
             Categorize as room or zone, and map zone coverage
@@ -803,7 +815,7 @@ actions:
     repeat:
       for_each: >
         {# Combine rooms and zones into single list for processing #}
-        {{ affected.rooms.values() | list + affected.zones.values() | list }}
+        {{ affected.rooms.items() | list + affected.zones.items() | list }}
       
       sequence:
         - alias: "Route processing based on group state"
@@ -811,7 +823,7 @@ actions:
           - conditions:
             - alias: "Group is currently ON"
               condition: template
-              value_template: "{{ repeat.item.state == 'on' }}"
+              value_template: "{{ repeat.item[1].state == 'on' }}"
 
             sequence:
               - alias: "Check if group has an active scene"
@@ -819,7 +831,7 @@ actions:
                   - conditions:
                     - alias: "Group has an active scene"
                       condition: template
-                      value_template: "{{ repeat.item.scene is defined }}"
+                      value_template: "{{ repeat.item[1].scene is defined }}"
                 
                     sequence:
                       - alias: "Prepare scene activation data"
@@ -836,17 +848,17 @@ actions:
                             } %}
 
                             {# Add dynamic scene settings if scene supports it #}
-                            {% if repeat.item.scene.supports_dynamic %}
+                            {% if repeat.item[1].scene.supports_dynamic %}
                               {% set data = data | combine({
-                                'dynamic': repeat.item.entity_id in resolved_targets.dynamic,
-                                'speed': dynamic_scene_speed if dynamic_scene_speed != -1 else repeat.item.scene.dynamics_speed
+                                'dynamic': repeat.item[0] in resolved_targets.dynamic,
+                                'speed': dynamic_scene_speed if dynamic_scene_speed != -1 else repeat.item[1].scene.dynamics_speed
                               }) %}
                             {% endif %}
 
                             {# Add brightness if not excluded from restoration #}
-                            {% if repeat.item.entity_id not in resolved_targets.brightness_excluded %}
+                            {% if repeat.item[0] not in resolved_targets.brightness_excluded %}
                               {% set data = data | combine({
-                                'brightness': repeat.item.brightness
+                                'brightness': repeat.item[1].brightness
                               }) %}
                             {% endif %}
 
@@ -857,7 +869,7 @@ actions:
                         continue_on_error: true
                         data: "{{ scene_data }}"
                         target:
-                          entity_id: "{{ repeat.item.scene.entity_id }}"
+                          entity_id: "{{ repeat.item[1].scene.entity_id }}"
 
                 default:
                   - alias: "Log skipped refresh (no scene found)"
@@ -865,7 +877,7 @@ actions:
                     data:
                       name: "Hue Scene Refresher"
                       message: >
-                        "Skipped scene refresh for {{ repeat.item.entity_id }}: No active scene detected."
+                        "Skipped scene refresh for {{ repeat.item[0] }}: No active scene detected."
                     service: logbook.log
                     
               - alias: "Handle state-excluded lights"
@@ -877,7 +889,7 @@ actions:
 
                     - alias: "Group contains state-excluded lights"
                       condition: template
-                      value_template: "{{ repeat.item.lights.values() | selectattr('state_excluded', 'eq', true) | list | count > 0 }}"
+                      value_template: "{{ repeat.item[1].lights.values() | selectattr('state_excluded', 'eq', true) | list | count > 0 }}"
                 
                     sequence:
                       - alias: "Turn off state-excluded lights"
@@ -887,9 +899,9 @@ actions:
                         target:
                           entity_id: >
                             {{ 
-                              repeat.item.lights.values()
-                              | selectattr('state_excluded', 'eq', true) 
-                              | map(attribute='entity_id') 
+                              repeat.item[1].lights.items()
+                              | selectattr('[1].state_excluded', 'eq', true) 
+                              | map(attribute='[0]') 
                               | list 
                             }}
 
@@ -906,15 +918,15 @@ actions:
                     =================================================================== #}
                     {% set ns = namespace(groups={}) %}
 
-                    {% for light in repeat.item.lights.values()
-                      | rejectattr('state','ne','on')
-                      | rejectattr('entity_id','in', resolved_targets.brightness_excluded)
-                      | selectattr('brightness','gt', 0)
+                    {% for light_id, light in repeat.item[1].lights.items()
+                        if light.state == 'on'
+                        and light.brightness | int(0) > 0
+                        and light_id not in resolved_targets.brightness_excluded
                     %}
                       {% set key = light.brightness | string %}
 
                       {% set ns.groups = ns.groups | combine({
-                        key: (ns.groups[key] if key in ns.groups else []) + [light.entity_id]
+                        key: (ns.groups[key] if key in ns.groups else []) + [light_id]
                       }) %}
                     {% endfor %}
 
