@@ -1,5 +1,5 @@
 blueprint:
-  name: Hue Scene Refresher (v2.4)
+  name: Hue Scene Refresher (v2.6)
   domain: automation
   author: Electro_Attacks
   description: >
@@ -390,6 +390,15 @@ conditions:
               {{ ids | selectattr(0, 'eq', 'hue') | list | count > 0 }}
  
 actions:
+  - alias: "Store all Hue entities for snapshot"
+    variables:
+      all_hue_entities: >
+        {{ 
+          integration_entities('hue')
+          | reject('match', '^(binary_sensor|sensor|switch|event)\.')
+          | list
+        }}
+
   - alias: "Initialize state change tracking"
     variables:
       trigger_events: >
@@ -399,15 +408,6 @@ actions:
             'to_state': trigger.to_state.state if trigger.to_state is not none else 'unknown'
           }
         } }}
-
-  - alias: "Store all Hue entities for snapshot"
-    variables:
-      all_hue_entities: >
-        {{ 
-          integration_entities('hue')
-          | reject('match', '^(binary_sensor|sensor|switch|event)\.')
-          | list
-        }}
 
   - alias: "Collect subsequent state changes via polling"
     repeat:
@@ -709,6 +709,10 @@ actions:
         {% endfor %}
 
         {{ {
+          'metadata': {
+            'version': '2.6',
+            'timestamp': utcnow().isoformat(),
+          },
           'rooms': snapshot.rooms,
           'zones': standalone_zones.data
         } }}
