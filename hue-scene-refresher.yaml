@@ -1,5 +1,5 @@
 blueprint:
-  name: Hue Scene Refresher (v2.3)
+  name: Hue Scene Refresher (v2.4)
   domain: automation
   author: Electro_Attacks
   description: >
@@ -624,7 +624,7 @@ actions:
           {% set group_entry = group_entry | combine({
             'state': 'on' if group_fully_active else 'off' if group_fully_off else 'partial_on',
             'has_changed': 
-              group_lights.items
+              group_lights.items.values()
               | selectattr('has_changed', 'eq', true)
               | list 
               | count > 0 
