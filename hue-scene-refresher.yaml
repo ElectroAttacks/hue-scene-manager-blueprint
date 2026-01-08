@@ -1,5 +1,5 @@
 blueprint:
-  name: Hue Scene Refresher (v2.9)
+  name: Hue Scene Refresher (v2.10)
   domain: automation
   author: Electro_Attacks
   description: >
@@ -7,32 +7,45 @@ blueprint:
 
     ## Core Features
 
-    ### 🎯 Three-State System
-    Groups are evaluated as `ON` (all lights on, no effects), `OFF` (all lights off), or `PARTIAL_ON` (mixed states)
+    - **Three-State System** — Groups are evaluated based on their light composition:
+      - `ON`: All lights active with no effects running
+      - `OFF`: All lights turned off
+      - `PARTIAL_ON`: Mixed states or active effects detected
 
-    ### 🧠 Smart Refresh Logic
-    State transition awareness determines refresh targets:
-    - `ON` → `PARTIAL_ON` refreshes **all zones**
-    - `PARTIAL_ON` → `PARTIAL_ON` refreshes **only changed zones**
-    - Direct `ON`/`OFF` transitions refresh **the room itself**
+    - **Smart Refresh Logic** — Determines refresh targets based on state transitions:
+      - `ON` → `PARTIAL_ON`: Refreshes all zones in the room
+      - `PARTIAL_ON` → `PARTIAL_ON`: Refreshes only zones that changed
+      - Direct `ON`/`OFF`: Refreshes the room itself
 
-    ### ⚡ Batch Optimization
-    Brightness restoration groups lights by target brightness level, reducing Hue bridge API calls and improving performance
+    - **Batch Optimization** — Improves performance through intelligent grouping:
+      - Groups lights by target brightness level
+      - Reduces Hue bridge API calls
+      - Minimizes network overhead during restoration
 
-    ### 🎬 Dynamic Scene Support
-    Configurable playback speed for animated Hue scenes with automatic settle delays
+    - **Dynamic Scene Support** — Full control over animated Hue scenes:
+      - Configurable playback speed override
+      - Automatic settle delays based on transition time
+      - Per-target dynamic mode configuration
 
-    ### 🗺️ Zone Coverage Mapping
-    Automatically detects and refreshes overlapping zones within rooms based on light membership
+    - **Zone Coverage Mapping** — Intelligent hierarchical scene management:
+      - Detects overlapping zones within rooms
+      - Calculates zone coverage percentages
+      - Automatically refreshes affected zones based on light membership
 
-    ### ✨ Effect Detection
-    Optionally respects or ignores active light effects (`colorloop`, etc.) when determining group state
+    - **Effect Detection** — Flexible handling of active light effects:
+      - Optional effect awareness (`colorloop`, etc.)
+      - Configurable blocking or ignoring of effects
+      - Prevents scene refresh conflicts with running animations
 
-    ### 🎛️ Fine-Grained Control
-    Exclude specific lights from state evaluation or brightness restoration while still allowing scene participation
+    - **Fine-Grained Control** — Exclude specific entities from processing:
+      - State evaluation exclusions (lights ignored when determining group state)
+      - Brightness restoration exclusions (lights skip brightness reset)
+      - Scene participation still allowed for excluded lights
 
-    ### 🔗 Post-Action Hooks
-    Execute custom actions when rooms go `OFF` or after successful scene refresh completion
+    - **Post-Action Hooks** — Execute custom automations at key moments:
+      - Trigger actions when rooms transition to `OFF`
+      - Execute logic after successful scene refresh
+      - Chain additional automations or notifications
   homeassistant:
     min_version: 2025.12.4
 
