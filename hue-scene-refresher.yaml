@@ -1,5 +1,5 @@
 blueprint:
-  name: Hue Scene Refresher (v2.7)
+  name: Hue Scene Refresher (v2.8)
   domain: automation
   author: Electro_Attacks
   description: >
@@ -239,46 +239,55 @@ variables:
   brightness_restore_exclusions: !input targets_excluded_from_brightness_restore
   resolved_targets: >
     {# ===================================================================
-      Target Resolution Macro
+      Target Resolution Engine
       
-      Converts Home Assistant target selectors into flat, unique lists of
-      light entities by recursively resolving all hierarchical references.
+      Converts Home Assistant target selectors into flat, deduplicated lists
+      of light entity IDs by recursively resolving all hierarchical references.
       
       Purpose:
-        User configurations can specify targets using various selectors:
-        - Direct entity IDs (light.bedroom_1)
-        - Devices (all entities on a device)
-        - Areas (all entities in a room/area)
-        - Floors (all entities on a building floor)
-        - Labels/tags (all entities with a specific label)
+        User configurations can specify targets using various selector types:
+        • Direct entity IDs (light.bedroom_1)
+        • Devices (all entities on a Hue bridge/device)
+        • Areas/Rooms (all entities in a specific area)
+        • Floors (all entities on a building level)
+        • Labels/Tags (all entities with a specific label)
         
-        This macro resolves ALL of these into a single deduplicated list
-        of actual light entity IDs for efficient processing.
-      
-      Input (source):
-        A Home Assistant target selector object that may contain:
-        - entity_id: Single entity or list of entities
-        - device_id: Single device or list of devices
-        - area_id: Single area or list of areas  
-        - floor_id: Single floor or list of floors
-        - label_id: Single label or list of labels
-      
-      Output:
-        Flat list of unique light entity_ids (e.g., ['light.bedroom_1', ...])
-        Only entities in the 'light' domain are included.
+        This engine resolves ALL of these into a single deduplicated list
+        of actual light entity IDs for efficient runtime processing.
       
       Processing Flow:
-        1. Extract direct entity references
-        2. Expand hierarchical targets (floors → areas → entities)
-        3. Expand devices to their entities
-        4. Process labels (which can tag entities, devices, or areas)
-        5. Merge all sources, filter to light domain only
+        1. Extract direct entity_id references
+        2. Expand hierarchical targets:
+           • Floors → entities on that floor
+           • Areas → entities in that area  
+           • Devices → entities on that device
+        3. Process labels (which can tag entities, devices, OR areas):
+           • Direct: Entities with the label
+           • Indirect: Devices/Areas with label → their entities
+        4. Merge all sources
+        5. Filter to 'light' domain only
         6. Deduplicate and return as list
+      
+      Input Format (source):
+        Target selector object with any combination of:
+        • entity_id: string | list[string]
+        • device_id: string | list[string]
+        • area_id: string | list[string]  
+        • floor_id: string | list[string]
+        • label_id: string | list[string]
+      
+      Output Format:
+        List[string] - Unique light entity IDs
+        Example: ['light.bedroom_1', 'light.living_room_2', ...]
+      
+      Used For:
+        • dynamic: Lights that should use dynamic scene playback
+        • state_excluded: Lights excluded from group state evaluation
+        • brightness_excluded: Lights excluded from brightness restoration
     =================================================================== #}
-
+    
     {%- macro resolve_targets(source, returns) -%}
 
-      {# Direct entity targets #}
       {%- set entities = source.entity_id 
         if source.entity_id is list
         else ([source.entity_id] 
@@ -286,7 +295,6 @@ variables:
           else [])
       -%}
 
-      {# Hierarchical targets #}
       {%- set floors = (source.floor_id | map('floor_entities') | list | sum(start=[]))
         if source.floor_id is list 
         else (floor_entities(source.floor_id) 
@@ -331,7 +339,6 @@ variables:
         {%- endfor -%}
       {%- endif -%}
 
-      {# Merge, filter and de-duplicate light entities #}
       {%- do returns(
         (entities + floors + areas + devices + labels.entities)
           | select('match', '^light\.')
@@ -708,7 +715,7 @@ actions:
 
         {{ {
           'metadata': {
-            'version': '2.7',
+            'version': '2.8',
             'timestamp': utcnow().isoformat(),
           },
           'rooms': snapshot.rooms,
