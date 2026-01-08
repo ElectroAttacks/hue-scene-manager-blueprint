@@ -1,5 +1,5 @@
 blueprint:
-  name: Hue Scene Refresher (v2.6)
+  name: Hue Scene Refresher (v2.7)
   domain: automation
   author: Electro_Attacks
   description: >
@@ -208,7 +208,7 @@ mode: single
 max_exceeded: info
 
 trace:
-  stored_traces: 20
+  stored_traces: 10
 
 triggers:
   - alias: "Hue target turned ON"
@@ -446,10 +446,8 @@ actions:
               {{ events.data }}
           
         - alias: "Delay before next poll"
-          delay:
-            seconds: "{{ state_trigger_delay }}"
+          delay: "{{ [ state_trigger_delay, 0.25 ] | max }}"
 
-  
   - alias: "Finalize state change tracking"
     variables:
       previous_event_count: null
@@ -710,7 +708,7 @@ actions:
 
         {{ {
           'metadata': {
-            'version': '2.6',
+            'version': '2.7',
             'timestamp': utcnow().isoformat(),
           },
           'rooms': snapshot.rooms,
