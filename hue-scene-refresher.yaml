@@ -207,6 +207,9 @@ blueprint:
 mode: single
 max_exceeded: info
 
+trace:
+  stored_traces: 20
+
 triggers:
   - alias: "Hue target turned ON"
     id: state_change
