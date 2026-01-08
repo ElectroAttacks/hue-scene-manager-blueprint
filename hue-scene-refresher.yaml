@@ -1,5 +1,5 @@
 blueprint:
-  name: Hue Scene Refresher(v2.0)
+  name: Hue Scene Refresher (v2.2)
   domain: automation
   author: Electro_Attacks
   description: >
@@ -371,7 +371,8 @@ conditions:
           - alias: "Trigger did not originate from Hue state change"
             condition: not
             conditions:
-              - condition: trigger
+              - alias: "Check for state_change trigger"
+                condition: trigger
                 id: state_change
 
           - alias: "Trigger entity_id is present and valid"
@@ -402,7 +403,7 @@ actions:
   - alias: "Collect subsequent state changes via polling"
     repeat:
       until:
-        - alias: "" 
+        - alias: "No new events detected"
           condition: template
           value_template: "{{ previous_event_count >= trigger_events | count }}"
 
@@ -439,7 +440,7 @@ actions:
 
               {{ events.data }}
   
-  - alias: ""
+  - alias: "Finalize state change tracking"
     variables:
       previous_event_count: null
 
