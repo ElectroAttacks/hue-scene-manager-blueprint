@@ -1,5 +1,5 @@
-blueprint:
-  name: Hue Scene Refresher (v2.11)
+﻿blueprint:
+  name: Hue Scene Refresher (v1.4.10)
   domain: automation
   author: Electro_Attacks
   description: >
