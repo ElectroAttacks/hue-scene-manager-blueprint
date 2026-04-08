@@ -736,7 +736,7 @@ actions:
 
         {{ {
           'metadata': {
-            'version': '2.9',
+            'version': '1.0',
             'timestamp': utcnow().isoformat(),
           },
           'rooms': snapshot.rooms,
