@@ -3,7 +3,7 @@ repos:
     rev: v5.0.0
     hooks:
       - id: check-yaml
-        args: [--unsafe]        # allow HA custom tags like !input
+        args: [--unsafe] # allow HA custom tags like !input
       - id: end-of-file-fixer
       - id: trailing-whitespace
       - id: mixed-line-ending

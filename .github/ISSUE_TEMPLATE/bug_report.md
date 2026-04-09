@@ -8,9 +8,9 @@ labels: bug
 <!-- A clear and concise description of what went wrong. -->
 
 ## Steps to Reproduce
-1. 
-2. 
-3. 
+1.
+2.
+3.
 
 ## Expected Behaviour
 <!-- What should have happened? -->
