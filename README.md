@@ -71,6 +71,6 @@ When any monitored Hue entity changes, a short polling window opens that:
 
 ---
 
-## License
+## Support
 
-[MIT](LICENSE) — © Electro_Attacks
+If this blueprint is useful to you, consider [sponsoring the project](https://github.com/sponsors/ElectroAttacks). ❤️
