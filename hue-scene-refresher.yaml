@@ -9,6 +9,9 @@
   homeassistant:
     min_version: 2025.12.4
 
+  labels:
+    - "Purpose-specific triggers and conditions"
+
   input:
     triggers:
       name: Trigger Monitoring & Polling
