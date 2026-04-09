@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hue Scene Refresher</title>
+  <meta name="description" content="Intelligently refreshes Philips Hue scenes when lights change state, using advanced state transition detection to minimise unnecessary updates." />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --surface-2: #22263a;
+      --border: #2e334d;
+      --accent: #f5a623;
+      --accent-dim: rgba(245,166,35,.15);
+      --text: #e4e8f0;
+      --text-muted: #8892aa;
+      --radius: 10px;
+      --font: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 16px;
+      line-height: 1.65;
+      min-height: 100vh;
+    }
+
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* ── Layout ── */
+    header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 2.5rem 1.5rem 2rem;
+      text-align: center;
+    }
+
+    header .eyebrow {
+      display: inline-block;
+      background: var(--accent-dim);
+      color: var(--accent);
+      border: 1px solid var(--accent);
+      border-radius: 20px;
+      font-size: .75rem;
+      font-weight: 600;
+      letter-spacing: .07em;
+      text-transform: uppercase;
+      padding: .25rem .8rem;
+      margin-bottom: 1rem;
+    }
+
+    header h1 {
+      font-size: clamp(1.8rem, 5vw, 2.8rem);
+      font-weight: 700;
+      letter-spacing: -.02em;
+      margin-bottom: .75rem;
+    }
+
+    header p.tagline {
+      color: var(--text-muted);
+      max-width: 600px;
+      margin: 0 auto 1.5rem;
+    }
+
+    .badge-area {
+      margin-top: 1.25rem;
+    }
+
+    .badge-area a img {
+      height: 40px;
+      border-radius: 6px;
+      transition: opacity .2s;
+    }
+    .badge-area a:hover img { opacity: .85; }
+
+    main {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 3rem 1.5rem 5rem;
+    }
+
+    /* ── Section headings ── */
+    h2 {
+      font-size: 1.3rem;
+      font-weight: 600;
+      color: var(--accent);
+      margin: 3rem 0 1rem;
+      padding-bottom: .4rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    h3 {
+      font-size: 1rem;
+      font-weight: 600;
+      color: var(--text);
+      margin: 1.75rem 0 .5rem;
+    }
+
+    p { margin-bottom: .75rem; color: var(--text-muted); }
+
+    /* ── Feature cards ── */
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+      gap: 1rem;
+      margin-top: 1rem;
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.25rem 1.25rem 1rem;
+    }
+
+    .card .icon {
+      font-size: 1.4rem;
+      margin-bottom: .6rem;
+    }
+
+    .card h3 {
+      margin: 0 0 .4rem;
+      font-size: .95rem;
+    }
+
+    .card p { font-size: .875rem; margin: 0; }
+
+    /* ── Config tables ── */
+    .config-section {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      margin-top: 1rem;
+    }
+
+    .config-section table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    .config-section thead th {
+      background: var(--surface-2);
+      padding: .6rem 1rem;
+      text-align: left;
+      font-size: .8rem;
+      font-weight: 600;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .config-section tbody tr:not(:last-child) td {
+      border-bottom: 1px solid var(--border);
+    }
+
+    .config-section tbody td {
+      padding: .7rem 1rem;
+      font-size: .875rem;
+      vertical-align: top;
+    }
+
+    .config-section tbody td:first-child {
+      font-family: 'Consolas', 'Cascadia Code', monospace;
+      color: var(--accent);
+      white-space: nowrap;
+    }
+
+    .config-section tbody td:nth-child(2) {
+      color: var(--text-muted);
+      white-space: nowrap;
+    }
+
+    .config-section tbody td:nth-child(3) {
+      color: var(--text-muted);
+    }
+
+    code {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: .1em .35em;
+      font-family: 'Consolas', 'Cascadia Code', monospace;
+      font-size: .85em;
+    }
+
+    .tip {
+      background: var(--accent-dim);
+      border-left: 3px solid var(--accent);
+      border-radius: 0 var(--radius) var(--radius) 0;
+      padding: .8rem 1rem;
+      margin-top: 1rem;
+      font-size: .875rem;
+      color: var(--text-muted);
+    }
+
+    .tip strong { color: var(--accent); }
+
+    /* ── Footer ── */
+    footer {
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+      text-align: center;
+      padding: 1.5rem;
+      font-size: .85rem;
+      color: var(--text-muted);
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="eyebrow">Home Assistant Blueprint</div>
+  <h1>Hue Scene Refresher</h1>
+  <p class="tagline">
+    Intelligently refreshes Philips Hue scenes when lights change state, using advanced
+    state transition detection to minimise unnecessary updates.
+  </p>
+  <div class="badge-area">
+    <a href="https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2FElectroAttacks%2Fhue-scene-manager-blueprint%2Fblob%2Fmain%2Fhue-scene-refresher.yaml"
+       title="Import Blueprint into Home Assistant">
+      <img src="https://my.home-assistant.io/badges/blueprint_import.svg" alt="Import Blueprint" />
+    </a>
+  </div>
+</header>
+
+<main>
+
+  <h2>Overview</h2>
+  <p>
+    <strong style="color:var(--text)">Hue Scene Refresher</strong> combines three-state evaluation
+    (<code>on</code> / <code>off</code> / <code>partial_on</code>) with transition-aware targeting so only
+    the required rooms and zones are refreshed — never more, never less.
+  </p>
+  <p>
+    When any monitored Hue entity changes, a short polling window opens, collects every light
+    transition into a single evaluation pass, and provides the full context so targeting stays accurate.
+  </p>
+  <p style="color:var(--text-muted);font-size:.875rem">
+    Minimum Home Assistant version: <code>2025.12.4</code>
+  </p>
+
+  <h2>Features</h2>
+  <div class="cards">
+    <div class="card">
+      <div class="icon">⚡</div>
+      <h3>Trigger Monitoring</h3>
+      <p>Watches Hue lights, rooms, or zones for state transitions. Optional supplemental triggers for attribute changes.</p>
+    </div>
+    <div class="card">
+      <div class="icon">🎨</div>
+      <h3>Scene Activation</h3>
+      <p>Configurable transition durations for both scene activation and per-light brightness restoration.</p>
+    </div>
+    <div class="card">
+      <div class="icon">✨</div>
+      <h3>Dynamic Scenes</h3>
+      <p>Per-group dynamic playback toggle with a global speed override for animated Hue effects.</p>
+    </div>
+    <div class="card">
+      <div class="icon">⚙️</div>
+      <h3>Advanced Evaluation</h3>
+      <p>Three-state group assessment, automatic overlapping-zone mapping, and per-entity exclusions.</p>
+    </div>
+    <div class="card">
+      <div class="icon">🔗</div>
+      <h3>Post-Refresh Hooks</h3>
+      <p>Custom actions when a group turns off or after every successful refresh cycle.</p>
+    </div>
+    <div class="card">
+      <div class="icon">🛡️</div>
+      <h3>Safeguards</h3>
+      <p>Burst collection, single-mode execution, and excluded-light force-off prevent ghost states.</p>
+    </div>
+  </div>
+
+  <h2>Configuration</h2>
+
+  <h3>Trigger Monitoring &amp; Polling</h3>
+  <div class="config-section">
+    <table>
+      <thead><tr><th>Input</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td>targets</td><td>—</td><td>Hue lights, rooms, or zones to monitor for <code>on</code>/<code>off</code> transitions.</td></tr>
+        <tr><td>state_trigger_delay</td><td>1 s</td><td>Polling interval in seconds — also sets the burst-collection window.</td></tr>
+        <tr><td>alternative_triggers</td><td>[]</td><td>Optional supplemental triggers for attribute changes or custom events.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Scene Activation &amp; Brightness Control</h3>
+  <div class="config-section">
+    <table>
+      <thead><tr><th>Input</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td>transition_time</td><td>2 s</td><td>Duration used when restoring individual light brightness after scene activation.</td></tr>
+        <tr><td>scene_transition_time</td><td>4 s</td><td>Duration used when activating Hue scenes.</td></tr>
+        <tr><td>dynamic_scene_speed</td><td>-1</td><td>Speed override for dynamic scenes. <code>-1</code> keeps each scene's default.</td></tr>
+        <tr><td>targets_with_dynamic_scenes</td><td>[]</td><td>Groups that activate scenes with <code>dynamic: true</code>.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Advanced Evaluation &amp; Safeguards</h3>
+  <div class="config-section">
+    <table>
+      <thead><tr><th>Input</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td>ignore_active_effects</td><td>false</td><td>Allow lights running Hue effects to count toward a group's <code>on</code> state.</td></tr>
+        <tr><td>turn_off_state_excluded_lights</td><td>true</td><td>Force-off excluded lights that were <code>off</code> in the snapshot after refresh.</td></tr>
+        <tr><td>targets_excluded_from_state_check</td><td>[]</td><td>Lights excluded from <code>on</code>/<code>off</code>/<code>partial_on</code> assessment.</td></tr>
+        <tr><td>targets_excluded_from_brightness_restore</td><td>[]</td><td>Lights that keep the scene brightness rather than reverting to snapshot level.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Post-Refresh Automation Hooks</h3>
+  <div class="config-section">
+    <table>
+      <thead><tr><th>Input</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td>turn_off_actions</td><td>[]</td><td>Executed when the evaluated room or zone ends with no active lights.</td></tr>
+        <tr><td>post_activation_actions</td><td>[]</td><td>Executed after scene activation and brightness restoration finish without errors.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="tip">
+    <strong>Tip:</strong> Inside hook actions, use <code>repeat.item[0]</code> for the group
+    <code>entity_id</code> and <code>repeat.item[1]</code> for its snapshot
+    (<code>state</code>, <code>brightness</code>, <code>scene</code>, <code>lights</code>, <code>zones</code>).
+  </div>
+
+</main>
+
+<footer>
+  &copy; Electro_Attacks &mdash; Released under the <a href="https://opensource.org/licenses/MIT">MIT License</a>
+</footer>
+
+</body>
+</html>
