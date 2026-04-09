@@ -14,3 +14,13 @@ repos:
     hooks:
       - id: yamllint
         args: [-c, .yamllint.yaml]
+
+  - repo: local
+    hooks:
+      - id: validate-ha-blueprint
+        name: Validate Home Assistant blueprint schema
+        language: python
+        entry: python scripts/validate_blueprint.py
+        files: \.yaml$
+        types: [yaml]
+        additional_dependencies: [pyyaml]
