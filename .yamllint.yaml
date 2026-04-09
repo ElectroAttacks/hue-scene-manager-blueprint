@@ -1,0 +1,28 @@
+extends: default
+
+rules:
+  # HA blueprint descriptions can be long
+  line-length:
+    max: 160
+    level: warning
+
+  # HA uses on/off as boolean values in triggers/states
+  truthy:
+    allowed-values: ["true", "false", "on", "off", "yes", "no"]
+    check-keys: false
+
+  # Blueprints don't start with ---
+  document-start: disable
+
+  # Allow #-style inline comments with 1 space
+  comments:
+    min-spaces-from-content: 1
+
+  # Allow empty lines between sections
+  empty-lines:
+    max: 2
+
+  indentation:
+    spaces: 2
+    indent-sequences: true
+    check-multi-line-strings: false
