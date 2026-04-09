@@ -2,7 +2,6 @@
   name: Hue Scene Refresher (v1.4.10)
   domain: automation
   author: Electro_Attacks
-  source_url: https://github.com/ElectroAttacks/hue-scene-manager-blueprint/blob/main/hue-scene-refresher.yaml
   description: >
     Intelligently refreshes Philips Hue scenes when lights change state, using advanced state transition detection to minimise unnecessary updates.
 
