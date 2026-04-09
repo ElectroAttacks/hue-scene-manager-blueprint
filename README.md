@@ -15,6 +15,7 @@
 
 - Home Assistant `2025.12.4` or newer
 - Philips Hue integration with at least one light, room, or zone
+- Blueprint lab feature **Purpose-specific triggers and conditions** enabled
 
 ## Documentation
 
