@@ -241,14 +241,14 @@ triggers:
     trigger: light.turned_on
     target: !input targets
     options:
-      behavior: any
+      behavior: each
 
   - alias: "Hue target turned OFF"
     id: state_change
     trigger: light.turned_off
     target: !input targets
     options:
-      behavior: any
+      behavior: each
 
   - triggers: !input alternative_triggers
 
